@@ -14,7 +14,11 @@ model Project {
   hpUrl     String?
   hpContent String?
   hearing   String?
-  output    String?
+  products      String?
+  output        String?
+  sitemap       String?
+  hpPageOutputs String?
+  hpPageThemes  String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

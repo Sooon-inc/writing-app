@@ -3,9 +3,10 @@ import { generateWriting } from "@/lib/claude";
 import { meoSystemPrompt, meoUserPrompt } from "@/lib/templates/meo";
 import { hpSystemPrompt, hpUserPrompt } from "@/lib/templates/hp";
 import { lpSystemPrompt, lpUserPrompt } from "@/lib/templates/lp";
+import { searchWeb } from "@/lib/scraper";
 
 export async function POST(req: Request) {
-  const { type, hpContent, hearing } = await req.json();
+  const { type, hpContent, hearing, products } = await req.json();
 
   if (!type) {
     return NextResponse.json({ error: "type is required" }, { status: 400 });
@@ -15,8 +16,23 @@ export async function POST(req: Request) {
   let userPrompt: string;
 
   if (type === "meo") {
+    // HP情報から店舗名を抽出してWeb検索
+    const titleMatch = (hpContent ?? "").match(/【タイトル】([^\n]+)/);
+    const rawTitle = titleMatch ? titleMatch[1] : "";
+    const businessName = rawTitle.split(/[|｜\-－/／]/).map((s: string) => s.trim()).find((s: string) => s.length > 0) ?? "";
+
+    let searchInfo = "";
+    if (businessName) {
+      const [addressResult, stationResult] = await Promise.all([
+        searchWeb(`${businessName} 住所 電話番号`),
+        searchWeb(`${businessName} 最寄り駅 アクセス`),
+      ]);
+      const combined = [addressResult, stationResult].filter(Boolean).join("\n");
+      if (combined) searchInfo = combined;
+    }
+
     systemPrompt = meoSystemPrompt;
-    userPrompt = meoUserPrompt(hpContent ?? "", hearing ?? "");
+    userPrompt = meoUserPrompt(hpContent ?? "", hearing ?? "", products ?? [], searchInfo);
   } else if (type === "lp") {
     systemPrompt = lpSystemPrompt;
     userPrompt = lpUserPrompt(hpContent ?? "", hearing ?? "");
@@ -28,8 +44,9 @@ export async function POST(req: Request) {
 
   try {
     const result = await generateWriting(systemPrompt, userPrompt);
-    // Validate JSON output
-    const parsed = JSON.parse(result);
+    // Strip markdown code block if present
+    const cleaned = result.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    const parsed = JSON.parse(cleaned);
     return NextResponse.json({ output: parsed });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";
