@@ -4,6 +4,7 @@ import { meoSystemPrompt, meoUserPrompt } from "@/lib/templates/meo";
 import { hpSystemPrompt, hpUserPrompt } from "@/lib/templates/hp";
 import { lpSystemPrompt, lpUserPrompt } from "@/lib/templates/lp";
 import { searchWeb } from "@/lib/scraper";
+import { jsonrepair } from "jsonrepair";
 
 export async function POST(req: Request) {
   const { type, hpContent, hearing, products } = await req.json();
@@ -44,9 +45,9 @@ export async function POST(req: Request) {
 
   try {
     const result = await generateWriting(systemPrompt, userPrompt);
-    // Strip markdown code block if present
+    // Strip markdown code block if present, then repair and parse
     const cleaned = result.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-    const parsed = JSON.parse(cleaned);
+    const parsed = JSON.parse(jsonrepair(cleaned));
     return NextResponse.json({ output: parsed });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";
