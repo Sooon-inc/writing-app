@@ -11,6 +11,7 @@ const PROJECT_TYPES = [
   { value: "hp-beauty", label: "HP ビューティー", desc: "プレミアムHP おしゃれな文体" },
   { value: "hp-recruit", label: "HP リクルート", desc: "プレミアムHP 採用向け文体" },
   { value: "lp", label: "LP", desc: "ランディングページ" },
+  { value: "portal", label: "ポータルサイト", desc: "ポータルサイト用ライティング" },
 ];
 
 export default function NewProjectPage() {

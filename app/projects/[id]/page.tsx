@@ -3,9 +3,13 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import WritingSection from "@/components/WritingSection";
 import { HP_SITEMAPS } from "@/lib/hpSitemap";
 import type { SitemapPage } from "@/lib/hpSitemap";
+import { PORTAL_SECTION_GROUPS } from "@/lib/templates/portal";
+import ChatBot, { type ChatOutput, type UpdatePayload } from "@/components/ChatBot";
+import HpPageCard from "@/components/HpPageCard";
+import MeoOutputDisplay from "@/components/MeoOutputDisplay";
+import OutputTable, { type SelectedTarget } from "@/components/OutputTable";
 
 const typeLabels: Record<string, string> = {
   meo: "MEO",
@@ -14,6 +18,7 @@ const typeLabels: Record<string, string> = {
   "hp-beauty": "HP ビューティー",
   "hp-recruit": "HP リクルート",
   lp: "LP",
+  portal: "ポータルサイト",
 };
 
 const HP_TYPES = ["hp-classic", "hp-strong", "hp-beauty", "hp-recruit"];
@@ -31,6 +36,7 @@ interface Project {
   type: string;
   hpUrl: string | null;
   hpContent: string | null;
+  gbpUrl: string | null;
   hearing: string | null;
   products: string | null;
   output: string | null;
@@ -49,6 +55,19 @@ export default function ProjectDetailPage() {
   const [generating, setGenerating] = useState(false);
   const [scrapeError, setScrapeError] = useState("");
   const [genError, setGenError] = useState("");
+  const [gbpUrl, setGbpUrl] = useState("");
+  const [gbpContent, setGbpContent] = useState("");
+  const [scrapingGbp, setScrapingGbp] = useState(false);
+  const [gbpScrapeError, setGbpScrapeError] = useState("");
+
+  // ポータル専用
+  const [portalGbpUrl, setPortalGbpUrl] = useState("");
+  const [portalInstagram, setPortalInstagram] = useState("");
+  const [portalTiktok, setPortalTiktok] = useState("");
+  const [portalYoutube, setPortalYoutube] = useState("");
+  const [portalGenerating, setPortalGenerating] = useState(false);
+  const [portalGenError, setPortalGenError] = useState("");
+  const [openingPortalSheet, setOpeningPortalSheet] = useState(false);
   const [output, setOutput] = useState<Record<string, unknown> | null>(null);
 
   // HP sitemap state
@@ -63,6 +82,7 @@ export default function ProjectDetailPage() {
 
   const isHpType = project ? HP_TYPES.includes(project.type) : false;
   const isLpType = project?.type === "lp";
+  const isPortalType = project?.type === "portal";
 
   // Fixed pages (always included)
   const fixedPages = sitemapPages.filter((p) => p.fixed);
@@ -103,6 +123,18 @@ export default function ProjectDetailPage() {
       .then((data: Project) => {
         setProject(data);
         setHpUrl(data.hpUrl ?? "");
+        setGbpUrl(data.gbpUrl ?? "");
+        if (data.type === "portal") {
+          setPortalGbpUrl(data.gbpUrl ?? "");
+          if (data.sitemap) {
+            try {
+              const s = JSON.parse(data.sitemap) as { sns?: { instagram?: string; tiktok?: string; youtube?: string } };
+              setPortalInstagram(s.sns?.instagram ?? "");
+              setPortalTiktok(s.sns?.tiktok ?? "");
+              setPortalYoutube(s.sns?.youtube ?? "");
+            } catch { /* ignore */ }
+          }
+        }
         setHearing(data.hearing ?? "");
         if (data.products) {
           try {
@@ -172,6 +204,91 @@ export default function ProjectDetailPage() {
     setProject((prev) => prev ? { ...prev, hpUrl: hpUrl.trim(), hpContent: data.content } : prev);
   };
 
+  const handleScrapeGbp = async () => {
+    if (!gbpUrl.trim()) return;
+    setScrapingGbp(true);
+    setGbpScrapeError("");
+    const res = await fetch("/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: gbpUrl.trim() }),
+    });
+    const data = await res.json();
+    setScrapingGbp(false);
+    if (!res.ok) { setGbpScrapeError(data.error ?? "GBP情報の取得に失敗しました"); return; }
+    setGbpContent(data.content);
+    await fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gbpUrl: gbpUrl.trim() }),
+    });
+    setProject((prev) => prev ? { ...prev, gbpUrl: gbpUrl.trim() } : prev);
+  };
+
+  const handleGeneratePortal = async () => {
+    setPortalGenerating(true);
+    setPortalGenError("");
+    const res = await fetch("/api/generate-portal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: id,
+        hpUrl: hpUrl.trim(),
+        gbpUrl: portalGbpUrl.trim(),
+        sns: {
+          instagram: portalInstagram.trim(),
+          tiktok: portalTiktok.trim(),
+          youtube: portalYoutube.trim(),
+        },
+        hearing,
+      }),
+    });
+    const data = await res.json();
+    setPortalGenerating(false);
+    if (!res.ok) { setPortalGenError(data.error ?? "生成に失敗しました"); return; }
+    setOutput(data.output);
+    setProject((prev) => prev ? { ...prev, output: JSON.stringify(data.output) } : prev);
+  };
+
+  const handleDownloadPortal = async () => {
+    const res = await fetch("/api/export/portal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output, projectName: project?.name }),
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${project?.name ?? "ポータル"}_原稿.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleOpenPortalSheet = async () => {
+    setOpeningPortalSheet(true);
+    setSheetError("");
+    setSheetUrl(null);
+    const check = await fetch("/api/auth/google/check");
+    if (!check.ok) {
+      window.location.href = `/api/auth/google?projectId=${id}&sheetType=portal`;
+      return;
+    }
+    const res = await fetch("/api/export/portal/sheets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output, projectName: project?.name }),
+    });
+    setOpeningPortalSheet(false);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      setSheetError((errData as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
+      return;
+    }
+    const { url } = await res.json();
+    setSheetUrl(url);
+  };
+
   const handleGenerate = async () => {
     setGenerating(true);
     setGenError("");
@@ -184,7 +301,7 @@ export default function ProjectDetailPage() {
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, products: filledProducts }),
+      body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, products: filledProducts, gbpContent }),
     });
     const data = await res.json();
     setGenerating(false);
@@ -200,27 +317,36 @@ export default function ProjectDetailPage() {
 
   const handleGenerateHpPages = async () => {
     if (!project) return;
-    // HP_SITEMAPSを直接参照し、sitemapPagesのロード完了待ちを不要にする
-    const fixedSheets = (HP_SITEMAPS[project.type] ?? [])
+    const sitemapConfig = HP_SITEMAPS[project.type] ?? [];
+
+    // 固定ページ: instanceKey = sheetName（重複なし）
+    const fixedItems = sitemapConfig
       .filter((p) => p.fixed && p.sheetName)
-      .map((p) => p.sheetName!);
-    const optionalSheets = sitemapItems.filter((item) => item.sheetName).map((item) => item.sheetName);
-    const sheets = [...new Set([...fixedSheets, ...optionalSheets])];
-    if (sheets.length === 0) return;
+      .map((p) => ({
+        sheetName: p.sheetName!,
+        instanceKey: p.sheetName!,
+        theme: pageThemes[p.sheetName!] ?? "",
+        label: p.label,
+      }));
+
+    // 任意ページ: instanceKey = item.id（同じシートを複数追加しても独立して扱う）
+    const optionalItems = sitemapItems
+      .filter((item) => item.sheetName)
+      .map((item) => {
+        const found = sitemapConfig.find((p) => p.sheetName === item.sheetName);
+        return {
+          sheetName: item.sheetName,
+          instanceKey: item.id,
+          theme: pageThemes[item.id] ?? "",
+          label: found ? found.label : item.sheetName,
+        };
+      });
+
+    const allItems = [...fixedItems, ...optionalItems];
+    if (allItems.length === 0) return;
 
     setGeneratingHp(true);
     setHpGenError("");
-
-    // id-keyed pageThemes → sheetName-keyed generationThemes（API用）
-    const generationThemes: Record<string, string> = {};
-    for (const item of sitemapItems) {
-      if (item.sheetName && pageThemes[item.id]) {
-        generationThemes[item.sheetName] = pageThemes[item.id];
-      }
-    }
-    for (const p of (HP_SITEMAPS[project.type] ?? []).filter((p) => p.fixed && p.sheetName)) {
-      if (pageThemes[p.sheetName!]) generationThemes[p.sheetName!] = pageThemes[p.sheetName!];
-    }
 
     // Save themes before generating
     await fetch(`/api/projects/${id}`, {
@@ -230,12 +356,17 @@ export default function ProjectDetailPage() {
     });
 
     const allOutputs: Record<string, Record<number, string>> = {};
-    for (const sheet of sheets) {
-      setGeneratingSheet(sheet);
+    for (const item of allItems) {
+      setGeneratingSheet(item.label);
       const res = await fetch("/api/generate-hp-pages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: id, selectedSheets: [sheet], pageThemes: generationThemes }),
+        body: JSON.stringify({
+          projectId: id,
+          sheetName: item.sheetName,
+          instanceKey: item.instanceKey,
+          theme: item.theme,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -271,6 +402,51 @@ export default function ProjectDetailPage() {
     a.download = `${project?.name ?? "HP"}_HPヒアリングシート.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleChatApply = async (updates: UpdatePayload) => {
+    if (updates.kind === "output") {
+      const next = { ...(output ?? {}), ...updates.diff };
+      setOutput(next);
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output: JSON.stringify(next) }),
+      });
+    } else if (updates.kind === "hp") {
+      const next = { ...(hpPageOutputs ?? {}) };
+      for (const [key, rows] of Object.entries(updates.diff)) {
+        next[key] = {
+          ...(next[key] ?? {}),
+          ...Object.fromEntries(
+            Object.entries(rows).map(([r, v]) => [parseInt(r), v])
+          ),
+        };
+      }
+      setHpPageOutputs(next);
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hpPageOutputs: JSON.stringify(next) }),
+      });
+    } else if (updates.kind === "lp") {
+      const next = {
+        ...(lpOutput ?? {}),
+        ...Object.fromEntries(
+          Object.entries(updates.diff).map(([r, v]) => [parseInt(r), v])
+        ),
+      };
+      setLpOutput(next);
+      const existingHpOut = (() => {
+        try { return JSON.parse(project?.hpPageOutputs ?? "{}") as Record<string, unknown>; }
+        catch { return {}; }
+      })();
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hpPageOutputs: JSON.stringify({ ...existingHpOut, LP: next }) }),
+      });
+    }
   };
 
   // LP state
@@ -372,6 +548,18 @@ export default function ProjectDetailPage() {
   const [lpOutput, setLpOutput] = useState<Record<number, string> | null>(null);
   const [generatingLp, setGeneratingLp] = useState(false);
   const [lpGenError, setLpGenError] = useState("");
+  const [lpFieldDefs, setLpFieldDefs] = useState<{ rn: number; section: string; label: string; condition?: string }[]>([]);
+  const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
+
+  useEffect(() => {
+    if (isLpType && lpOutput && lpFieldDefs.length === 0) {
+      fetch("/api/lp-fields")
+        .then((r) => r.json())
+        .then((data: { fields: { rn: number; section: string; label: string }[] }) => setLpFieldDefs(data.fields))
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lpOutput, isLpType]);
 
   const handleGenerateLp = async () => {
     setGeneratingLp(true);
@@ -432,6 +620,12 @@ export default function ProjectDetailPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ projectId: id }),
           });
+        } else if (type === "portal") {
+          res = await fetch("/api/export/portal/sheets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ output, projectName: project.name }),
+          });
         } else {
           res = await fetch("/api/export/meo/sheets", {
             method: "POST",
@@ -479,10 +673,36 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const fixedSheets = project
-    ? (HP_SITEMAPS[project.type] ?? []).filter((p) => p.fixed && p.sheetName).map((p) => p.sheetName!)
-    : fixedPages.map((p) => p.sheetName!);
-  const sheetsToGenerate = [...new Set([...fixedSheets, ...sitemapItems.filter((item) => item.sheetName).map((item) => item.sheetName)])];
+  const sitemapConfig = project ? (HP_SITEMAPS[project.type] ?? []) : [];
+
+  const chatOutput: ChatOutput | null = (() => {
+    if (!project) return null;
+    if (isLpType) return lpOutput ? { type: "lp", data: lpOutput } : null;
+    if (isHpType) return hpPageOutputs ? { type: "hp", data: hpPageOutputs, themes: pageThemes } : null;
+    if (isPortalType) return output ? { type: "portal", data: output } : null;
+    return output ? { type: "meo", data: output } : null;
+  })();
+  // 生成対象ラベル一覧（固定ページ + 任意ページ、重複あり）
+  const pagesToGenerateLabels = [
+    ...sitemapConfig.filter((p) => p.fixed && p.sheetName).map((p) => p.label),
+    ...sitemapItems
+      .filter((item) => item.sheetName)
+      .map((item) => {
+        const found = sitemapConfig.find((p) => p.sheetName === item.sheetName);
+        return found ? found.label : item.sheetName;
+      }),
+  ];
+  // instanceKey → 表示ラベルのマッピング（output表示用）
+  const outputKeyToLabel: Record<string, string> = {};
+  for (const p of sitemapConfig) {
+    if (p.fixed && p.sheetName) outputKeyToLabel[p.sheetName] = p.label;
+  }
+  for (const item of sitemapItems) {
+    if (item.sheetName) {
+      const found = sitemapConfig.find((p) => p.sheetName === item.sheetName);
+      outputKeyToLabel[item.id] = found ? found.label : item.sheetName;
+    }
+  }
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -530,31 +750,85 @@ export default function ProjectDetailPage() {
 
         {/* Input area */}
         <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5 mb-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">HP URL</label>
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={hpUrl}
-                onChange={(e) => setHpUrl(e.target.value)}
-                placeholder="https://example.com"
-                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-              <button
-                onClick={handleScrape}
-                disabled={scraping || !hpUrl.trim()}
-                className="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
-              >
-                {scraping ? "読み込み中..." : "読み込む"}
-              </button>
+          {isPortalType ? (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">ホームページ URL</label>
+                <input
+                  type="url"
+                  value={hpUrl}
+                  onChange={(e) => setHpUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  GBP URL
+                  <span className="ml-1.5 text-xs text-gray-400 font-normal">（Googleビジネスプロフィール）</span>
+                </label>
+                <input
+                  type="url"
+                  value={portalGbpUrl}
+                  onChange={(e) => setPortalGbpUrl(e.target.value)}
+                  placeholder="https://business.google.com/..."
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">SNS URL（任意）</label>
+                <div className="space-y-2">
+                  <input
+                    type="url"
+                    value={portalInstagram}
+                    onChange={(e) => setPortalInstagram(e.target.value)}
+                    placeholder="Instagram: https://www.instagram.com/..."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <input
+                    type="url"
+                    value={portalTiktok}
+                    onChange={(e) => setPortalTiktok(e.target.value)}
+                    placeholder="TikTok: https://www.tiktok.com/..."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <input
+                    type="url"
+                    value={portalYoutube}
+                    onChange={(e) => setPortalYoutube(e.target.value)}
+                    placeholder="YouTube: https://www.youtube.com/..."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
             </div>
-            {scrapeError && <p className="text-red-500 text-xs mt-1">{scrapeError}</p>}
-            {project.hpContent && (
-              <p className="text-green-600 text-xs mt-1">
-                ✓ HP情報を取得済み ({project.hpContent.length.toLocaleString()}文字)
-              </p>
-            )}
-          </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">HP URL</label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={hpUrl}
+                  onChange={(e) => setHpUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  onClick={handleScrape}
+                  disabled={scraping || !hpUrl.trim()}
+                  className="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  {scraping ? "読み込み中..." : "読み込む"}
+                </button>
+              </div>
+              {scrapeError && <p className="text-red-500 text-xs mt-1">{scrapeError}</p>}
+              {project.hpContent && (
+                <p className="text-green-600 text-xs mt-1">
+                  ✓ HP情報を取得済み ({project.hpContent.length.toLocaleString()}文字)
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">ヒアリング内容</label>
@@ -566,6 +840,35 @@ export default function ProjectDetailPage() {
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
             />
           </div>
+
+          {project.type === "meo" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                GBP URL
+                <span className="ml-1.5 text-xs text-gray-400 font-normal">（GoogleビジネスプロフィールのURL）</span>
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={gbpUrl}
+                  onChange={(e) => setGbpUrl(e.target.value)}
+                  placeholder="https://business.google.com/... または maps.google.com/..."
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  onClick={handleScrapeGbp}
+                  disabled={scrapingGbp || !gbpUrl.trim()}
+                  className="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  {scrapingGbp ? "読み込み中..." : "読み込む"}
+                </button>
+              </div>
+              {gbpScrapeError && <p className="text-red-500 text-xs mt-1">{gbpScrapeError}</p>}
+              {gbpContent && (
+                <p className="text-green-600 text-xs mt-1">✓ GBP情報を取得済み ({gbpContent.length.toLocaleString()}文字)</p>
+              )}
+            </div>
+          )}
 
           {project.type === "meo" && (
             <div>
@@ -671,19 +974,38 @@ export default function ProjectDetailPage() {
                     </button>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <div className="space-y-1.5">
-                    {Object.entries(lpOutput)
-                      .sort(([a], [b]) => parseInt(a) - parseInt(b))
-                      .map(([rowNum, value]) =>
-                        value ? (
-                          <div key={rowNum} className="flex gap-3 text-sm">
-                            <span className="text-gray-300 w-8 shrink-0 text-right">R{rowNum}</span>
-                            <span className="text-gray-700">{value}</span>
-                          </div>
-                        ) : null
-                      )}
-                  </div>
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  {lpFieldDefs.length > 0 ? (
+                    <OutputTable
+                      fields={lpFieldDefs}
+                      output={Object.fromEntries(Object.entries(lpOutput).map(([k, v]) => [k, String(v)]))}
+                      selectedRn={selectedTarget?.instanceKey === "LP" ? selectedTarget.rn : undefined}
+                      onSelectRow={(rn, section, label, value) =>
+                        setSelectedTarget({
+                          instanceKey: "LP",
+                          pageLabel: "LP",
+                          rn,
+                          section,
+                          label,
+                          currentValue: value,
+                          displayText: `LP › [${section}] ${label}`,
+                        })
+                      }
+                    />
+                  ) : (
+                    <div className="p-5 space-y-1.5">
+                      {Object.entries(lpOutput)
+                        .sort(([a], [b]) => parseInt(a) - parseInt(b))
+                        .map(([rowNum, value]) =>
+                          value ? (
+                            <div key={rowNum} className="flex gap-3 text-sm">
+                              <span className="text-gray-300 w-8 shrink-0 text-right">R{rowNum}</span>
+                              <span className="text-gray-700">{value}</span>
+                            </div>
+                          ) : null
+                        )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -765,9 +1087,9 @@ export default function ProjectDetailPage() {
             {/* Generate button */}
             <div className="bg-white rounded-xl border border-gray-200 p-5">
               <p className="text-xs text-gray-400 mb-3">
-                生成対象: {sheetsToGenerate.length}ページ
-                {sheetsToGenerate.length > 0 && (
-                  <span className="ml-1 text-gray-300">({sheetsToGenerate.join(" / ")})</span>
+                生成対象: {pagesToGenerateLabels.length}ページ
+                {pagesToGenerateLabels.length > 0 && (
+                  <span className="ml-1 text-gray-300">({pagesToGenerateLabels.join(" / ")})</span>
                 )}
               </p>
               <button
@@ -803,36 +1125,57 @@ export default function ProjectDetailPage() {
                     </button>
                   </div>
                 </div>
-                {Object.entries(hpPageOutputs).map(([sheetName, rows]) => (
-                  <div key={sheetName} className="bg-white rounded-xl border border-gray-200 p-5">
-                    <h3 className="font-semibold text-gray-800 mb-3 text-sm">{sheetName}</h3>
-                    <div className="space-y-1.5">
-                      {Object.entries(rows)
-                        .sort(([a], [b]) => parseInt(a) - parseInt(b))
-                        .map(([rowNum, value]) =>
-                          value ? (
-                            <div key={rowNum} className="flex gap-3 text-sm">
-                              <span className="text-gray-300 w-8 shrink-0 text-right">R{rowNum}</span>
-                              <span className="text-gray-700">{value}</span>
-                            </div>
-                          ) : null
-                        )}
-                    </div>
-                  </div>
-                ))}
+                {Object.entries(hpPageOutputs).map(([key, rows]) => {
+                  const sheetName = (() => {
+                    // Fixed pages: key === sheetName
+                    const fixedMatch = sitemapConfig.find((p) => p.fixed && p.sheetName === key);
+                    if (fixedMatch) return key;
+                    // Optional pages: look up from sitemapItems
+                    const item = sitemapItems.find((it) => it.id === key);
+                    return item?.sheetName ?? key;
+                  })();
+                  return (
+                    <HpPageCard
+                      key={key}
+                      instanceKey={key}
+                      label={outputKeyToLabel[key] ?? key}
+                      theme={pageThemes[key] ?? ""}
+                      rows={rows}
+                      projectType={project.type}
+                      sheetName={sheetName}
+                      selectedTarget={selectedTarget}
+                      onSelectField={setSelectedTarget}
+                    />
+                  );
+                })}
               </div>
             )}
           </div>
         ) : !isLpType && (
           <>
-            <button
-              onClick={handleGenerate}
-              disabled={generating || (!project.hpContent && !hearing)}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold py-3 rounded-xl transition-colors mb-8"
-            >
-              {generating ? "生成中..." : "ライティング生成"}
-            </button>
-            {genError && <p className="text-red-500 text-sm mb-4">{genError}</p>}
+            {isPortalType ? (
+              <>
+                <button
+                  onClick={handleGeneratePortal}
+                  disabled={portalGenerating || (!hpUrl.trim() && !portalGbpUrl.trim() && !hearing.trim())}
+                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold py-3 rounded-xl transition-colors mb-8"
+                >
+                  {portalGenerating ? "情報収集・生成中..." : "ポータル原稿を生成"}
+                </button>
+                {portalGenError && <p className="text-red-500 text-sm mb-4">{portalGenError}</p>}
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={handleGenerate}
+                  disabled={generating || (!project.hpContent && !hearing)}
+                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold py-3 rounded-xl transition-colors mb-8"
+                >
+                  {generating ? "生成中..." : "ライティング生成"}
+                </button>
+                {genError && <p className="text-red-500 text-sm mb-4">{genError}</p>}
+              </>
+            )}
             {output && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -867,15 +1210,58 @@ export default function ProjectDetailPage() {
                       </button>
                     </div>
                   )}
+                  {project.type === "portal" && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleDownloadPortal}
+                        className="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Excelダウンロード
+                      </button>
+                      <button
+                        onClick={handleOpenPortalSheet}
+                        disabled={openingPortalSheet}
+                        className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                      >
+                        {openingPortalSheet ? "処理中..." : "スプレッドシートで開く"}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {Object.entries(output).map(([key, value]) => (
-                  <WritingSection key={key} title={key} value={value} />
-                ))}
+                {isPortalType ? (
+                  PORTAL_SECTION_GROUPS.map((group) => (
+                    <div key={group.label} className="bg-white rounded-xl border border-gray-200 p-5">
+                      <h3 className="font-semibold text-gray-700 text-sm mb-3 pb-2 border-b border-gray-100">{group.label}</h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        {(group.keys as readonly string[]).map((key) => (
+                          <div key={key} className="space-y-0.5">
+                            <p className="text-xs font-medium text-gray-500">{key}</p>
+                            <p className="text-sm text-gray-800 bg-amber-50 rounded px-2 py-1.5 min-h-[2rem] whitespace-pre-wrap">
+                              {String((output as Record<string, unknown>)[key] ?? "記載なし")}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <MeoOutputDisplay output={output} />
+                )}
               </div>
             )}
           </>
         )}
       </div>
+
+      {chatOutput && (
+        <ChatBot
+          projectId={id}
+          currentOutput={chatOutput}
+          onApply={handleChatApply}
+          selectedTarget={selectedTarget}
+          onClearTarget={() => setSelectedTarget(null)}
+        />
+      )}
     </main>
   );
 }

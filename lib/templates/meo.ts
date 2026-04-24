@@ -41,8 +41,25 @@ export const meoSystemPrompt = `あなたはMEO対策の初期設計を行うマ
       { "質問": "質問文", "選択肢": ["選択肢1", "選択肢2", "その他"] }
     ]
   },
+  "サービス": [
+    {
+      "サービス名": "検索される悩みベースの具体名称（抽象表現禁止）",
+      "説明文": "300文字前後。①どんな悩みを解決するか②施工内容・技術・工程（具体的に）③他社との違い④ユーザーのメリット⑤地域特性への対応を含む"
+    }
+  ],
   "商品サービス提案": ["この会社が追加で提供できそうな商品・サービス名1", "提案2"]
 }
+
+【サービスの注意事項】
+- あなたはMEO対策・ローカルSEO・AIO（AI検索最適化）の専門家として設計すること
+- サービスは「検索される悩みベースの名称」にすること（例：「屋根の雨漏りを素早く直したい」「外壁のひび割れが心配」）
+- 1サービス＝1検索意図（複数の内容をまとめない）
+- 抽象表現禁止（「高品質」「安心」だけのサービス名は禁止）
+- 専門用語はわかりやすく補足すること
+- 地域性を必ず自然に含めること（対象地域・気候・住宅事情を考慮）
+- AIO対策として「具体的な施工内容・工程・効果」を説明文に必ず含めること
+- HPの単なる言い換えは禁止（再構築すること）
+- 優先度の高い順に10個出力すること
 
 【商品サービスの注意事項】
 - 商品カテゴリは1社全体で必ず4種類以内に収めること
@@ -92,9 +109,10 @@ export const meoSystemPrompt = `あなたはMEO対策の初期設計を行うマ
 - 入力された商品・サービスが8個以上の場合は「商品サービス提案」は空配列（[]）にすること
 - 提案内容はビジネスの実態に合った現実的なものにすること（ハルシネーション禁止）`;
 
-export function meoUserPrompt(hpContent: string, hearing: string, products: string[], searchInfo?: string): string {
+export function meoUserPrompt(hpContent: string, hearing: string, products: string[], searchInfo?: string, gbpContent?: string): string {
   const parts = [];
   if (hpContent) parts.push(`【HPから取得した情報】\n${hpContent}`);
+  if (gbpContent) parts.push(`【Googleビジネスプロフィール（GBP）から取得した情報（住所・電話番号・営業時間などの事実情報として最優先で使用）】\n${gbpContent}`);
   if (searchInfo) parts.push(`【Web検索結果（住所・最寄り駅・電話番号などの事実情報として優先使用）】\n${searchInfo}`);
   if (hearing) parts.push(`【ヒアリング内容】\n${hearing}`);
   if (products.length > 0) {

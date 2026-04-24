@@ -147,10 +147,11 @@ ${fieldList}
 }
 
 export async function POST(req: NextRequest) {
-  const { projectId, selectedSheets, pageThemes } = (await req.json()) as {
+  const { projectId, sheetName, instanceKey, theme } = (await req.json()) as {
     projectId: string;
-    selectedSheets: string[];
-    pageThemes?: Record<string, string>;
+    sheetName: string;
+    instanceKey: string;
+    theme?: string;
   };
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
@@ -164,26 +165,31 @@ export async function POST(req: NextRequest) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
 
-  const hpPageOutputs: Record<string, Record<number, string>> = {};
+  const fields = await extractSheetFields(wb, sheetName);
+  const content = await generatePageContent(
+    sheetName,
+    fields,
+    project.hpContent ?? "",
+    project.hearing ?? "",
+    theme ?? ""
+  );
+  const hpPageOutputs: Record<string, Record<number, string>> = {
+    [instanceKey]: content,
+  };
 
-  for (const sheetName of selectedSheets) {
-    const fields = await extractSheetFields(wb, sheetName);
-    const theme = pageThemes?.[sheetName] ?? "";
-    const content = await generatePageContent(
-      sheetName,
-      fields,
-      project.hpContent ?? "",
-      project.hearing ?? "",
-      theme
-    );
-    hpPageOutputs[sheetName] = content;
-  }
+  // Merge with existing hpPageOutputs so each call accumulates rather than overwrites
+  let existingOutputs: Record<string, Record<number, string>> = {};
+  try {
+    if (project.hpPageOutputs) {
+      existingOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<number, string>>;
+    }
+  } catch { /* ignore */ }
+  const mergedOutputs = { ...existingOutputs, ...hpPageOutputs };
 
   await prisma.project.update({
     where: { id: projectId },
     data: {
-      sitemap: JSON.stringify(selectedSheets),
-      hpPageOutputs: JSON.stringify(hpPageOutputs),
+      hpPageOutputs: JSON.stringify(mergedOutputs),
     },
   });
 

@@ -6,12 +6,7 @@ import { cookies } from "next/headers";
 import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
-
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  "http://localhost:3000/api/auth/google/callback"
-);
+import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
 
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
@@ -21,6 +16,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${req.nextUrl.origin}/api/auth/google/callback`
+  );
   oauth2Client.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
 
   const { projectId } = (await req.json()) as { projectId: string };
@@ -35,34 +35,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
   }
 
-  const hpPageOutputs = JSON.parse(project.hpPageOutputs) as Record<
-    string,
-    Record<string, string>
-  >;
+  const hpPageOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
+
+  // sitemap から sitemapItems を復元
+  let sitemapItems: HpSitemapItem[] = [];
+  try {
+    if (project.sitemap) {
+      const parsed = JSON.parse(project.sitemap) as Array<HpSitemapItem | string>;
+      sitemapItems = parsed.flatMap((item) =>
+        typeof item === "string" ? [{ id: item, sheetName: item }] : [item]
+      );
+    }
+  } catch { /* ignore */ }
+
+  // pageThemes を復元
+  let pageThemes: Record<string, string> = {};
+  try {
+    if (project.hpPageThemes) pageThemes = JSON.parse(project.hpPageThemes) as Record<string, string>;
+  } catch { /* ignore */ }
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
 
-  const findSheet = (name: string) =>
-    wb.getWorksheet(name) ??
-    wb.worksheets.find((s) => s.name.trim() === name.trim());
-
-  for (const [sheetName, rowContents] of Object.entries(hpPageOutputs)) {
-    const sheet = findSheet(sheetName);
-    if (!sheet) continue;
-    for (const [rowNumStr, value] of Object.entries(rowContents)) {
-      if (!value) continue;
-      const rowNum = parseInt(rowNumStr);
-      const row = sheet.getRow(rowNum);
-      const cell = row.getCell(8);
-      // マージセルのスレーブの場合はマスターセルに書き込む
-      const target = cell.isMerged && cell.master?.address !== cell.address
-        ? cell.master
-        : cell;
-      target.value = value;
-      row.commit();
-    }
-  }
+  applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes);
 
   const buffer = await wb.xlsx.writeBuffer();
 
@@ -94,7 +89,6 @@ export async function POST(req: NextRequest) {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Drive permissions.create error:", msg);
-    // 権限設定失敗でもURLは返す
   }
 
   return NextResponse.json({ url: file.data.webViewLink });

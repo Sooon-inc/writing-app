@@ -8,12 +8,6 @@ import { prisma } from "@/lib/prisma";
 
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  "http://localhost:3000/api/auth/google/callback"
-);
-
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("g_access_token")?.value;
@@ -22,6 +16,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${req.nextUrl.origin}/api/auth/google/callback`
+  );
   oauth2Client.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
 
   const { projectId } = (await req.json()) as { projectId: string };

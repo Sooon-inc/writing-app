@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 prisma/dev.db
+
+# temporary analysis scripts
+analyze_*.js
+check_*.js
+read_excel.js

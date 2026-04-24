@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  "http://localhost:3000/api/auth/google/callback"
-);
-
 export async function GET(req: NextRequest) {
+  console.log("[auth/callback] called, url:", req.nextUrl.toString());
+
   const code = req.nextUrl.searchParams.get("code") ?? "";
   const stateRaw = req.nextUrl.searchParams.get("state") ?? "{}";
+  const error = req.nextUrl.searchParams.get("error");
+
+  if (error) {
+    console.error("[auth/callback] Google returned error:", error);
+    return new NextResponse(`Google OAuth Error: ${error}`, { status: 400 });
+  }
+
+  if (!code) {
+    console.error("[auth/callback] no code in request");
+    return new NextResponse("Missing code parameter", { status: 400 });
+  }
 
   let projectId = "";
   let sheetType = "";
@@ -20,10 +27,37 @@ export async function GET(req: NextRequest) {
   } catch {
     projectId = stateRaw;
   }
+  console.log("[auth/callback] projectId:", projectId, "sheetType:", sheetType);
 
-  const { tokens } = await oauth2Client.getToken(code);
+  // リクエストのoriginからコールバックURLを動的生成
+  const callbackUrl = `${req.nextUrl.origin}/api/auth/google/callback`;
+  console.log("[auth/callback] callbackUrl:", callbackUrl);
 
-  const redirectUrl = new URL(`/projects/${projectId}`, req.url);
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    callbackUrl
+  );
+
+  let tokens;
+  try {
+    console.log("[auth/callback] calling getToken...");
+    const tokenPromise = oauth2Client.getToken(code);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("getToken timeout after 15s")), 15000)
+    );
+    const result = await Promise.race([tokenPromise, timeoutPromise]);
+    tokens = result.tokens;
+    console.log("[auth/callback] getToken success, has access_token:", !!tokens.access_token);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[auth/callback] getToken failed:", msg);
+    const errUrl = new URL(`/projects/${projectId || ""}`, req.nextUrl.origin);
+    errUrl.searchParams.set("authError", msg);
+    return NextResponse.redirect(errUrl);
+  }
+
+  const redirectUrl = new URL(`/projects/${projectId}`, req.nextUrl.origin);
   if (sheetType) redirectUrl.searchParams.set("openSheet", sheetType);
 
   const res = NextResponse.redirect(redirectUrl);
