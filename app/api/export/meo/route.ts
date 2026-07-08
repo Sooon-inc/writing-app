@@ -4,7 +4,7 @@ import { buildMeoWorkbook } from "@/lib/meoExcelBuilder";
 export async function POST(req: Request) {
   const { output, projectName, hpUrl } = await req.json();
 
-  const workbook = buildMeoWorkbook(output, projectName ?? "", hpUrl ?? "");
+  const workbook = await buildMeoWorkbook(output, projectName ?? "", hpUrl ?? "");
   const buffer = await workbook.xlsx.writeBuffer();
 
   return new NextResponse(buffer, {

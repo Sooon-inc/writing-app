@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function GET() {
+export async function GET(req: Request) {
+  const type = new URL(req.url).searchParams.get("type");
   const projects = await prisma.project.findMany({
+    where: type ? { type } : undefined,
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
@@ -16,7 +18,17 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const { name, type } = await req.json();
+  const {
+    name,
+    type,
+    hpUrl,
+    gbpUrl,
+    hearing,
+    industries,
+    products,
+    sitemap,
+    hpPageThemes,
+  } = await req.json();
 
   if (!name || !type) {
     return NextResponse.json(
@@ -26,7 +38,17 @@ export async function POST(req: Request) {
   }
 
   const project = await prisma.project.create({
-    data: { name, type },
+    data: {
+      name,
+      type,
+      hpUrl: hpUrl || null,
+      gbpUrl: gbpUrl || null,
+      hearing: hearing || null,
+      industries: industries || null,
+      products: products || null,
+      sitemap: sitemap || null,
+      hpPageThemes: hpPageThemes || null,
+    },
   });
 
   return NextResponse.json(project, { status: 201 });

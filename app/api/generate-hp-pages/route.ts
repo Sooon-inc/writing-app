@@ -4,6 +4,8 @@ import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
+import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
+import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 
 const client = new Anthropic();
 
@@ -67,7 +69,8 @@ async function generatePageContent(
   fields: { rn: number; section: string; label: string; charLimit: string }[],
   hpContent: string,
   hearing: string,
-  theme: string
+  theme: string,
+  gbpContent?: string
 ): Promise<Record<number, string>> {
   if (fields.length === 0) return {};
 
@@ -87,8 +90,8 @@ async function generatePageContent(
 - 「会社名」や「当社」は使わず、ヒアリング情報から得た実際の社名・店名を使用
 - 文字数制限がある場合は必ず守る
 - テーマ・キーワードが指定されている場合は、そのテーマやキーワードを優先的に反映する
-- 電話番号・住所・URL等は情報から正確に抽出（不明な場合は空文字）
-- Instagram/LINE/SNSのURLは情報から抽出（なければ空文字）
+- 電話番号・住所・FAX・代表者名・資本金・URLなどの事実情報は正確に抽出。不明な場合は「（不明）」と記載する（空文字や省略はしない）
+- Instagram/LINE/SNSのURLは情報から抽出（なければ「（不明）」）
 - 欧文見出し(英語)は短い英単語やフレーズ
 - リンク先はURLパス（例: /about, /service）
 - 写真説明系（〜写真）はファイル名や説明文ではなく写真の説明テキスト
@@ -102,6 +105,7 @@ async function generatePageContent(
 ${theme ? `\n【テーマ・キーワード】\n${theme}\n` : ""}
 【HP情報】
 ${hpContent || "（なし）"}
+${gbpContent ? `\n【Googleビジネスプロフィール情報（住所・電話番号・営業時間などの事実情報として優先使用）】\n${gbpContent}` : ""}
 
 【ヒアリング内容】
 ${hearing || "（なし）"}
@@ -162,19 +166,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
   }
 
+  // GBP URL が Google Maps URL なら Places API で情報取得
+  const isMapsUrl = (url: string) =>
+    url.includes("google.com/maps") ||
+    url.includes("maps.google.com") ||
+    url.includes("goo.gl") ||
+    url.includes("maps.app.goo.gl");
+  const gbpContent = project.gbpUrl && isMapsUrl(project.gbpUrl)
+    ? await getPlaceInfoFromMapsUrl(project.gbpUrl).catch(() => "")
+    : "";
+
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
 
   const fields = await extractSheetFields(wb, sheetName);
+  const industries = (() => {
+    try { return JSON.parse(project.industries ?? "[]") as string[]; } catch { return []; }
+  })();
   const content = await generatePageContent(
     sheetName,
     fields,
     project.hpContent ?? "",
-    project.hearing ?? "",
-    theme ?? ""
+    `【業種】${industries.join("、")}\n${project.hearing ?? ""}`,
+    theme ?? "",
+    gbpContent
   );
+  const checked = await reviewAndReviseMarketingJson(content, {
+    contentType: `HP:${sheetName}`,
+  });
   const hpPageOutputs: Record<string, Record<number, string>> = {
-    [instanceKey]: content,
+    [instanceKey]: checked.output,
   };
 
   // Merge with existing hpPageOutputs so each call accumulates rather than overwrites
@@ -193,5 +214,9 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ hpPageOutputs });
+  return NextResponse.json({
+    hpPageOutputs,
+    qualityReview: checked.review,
+    qualityRevisionAttempts: checked.attempts,
+  });
 }

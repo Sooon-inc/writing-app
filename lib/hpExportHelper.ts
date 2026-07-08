@@ -84,12 +84,14 @@ function writeContent(
  * - 固定ページ: 元のシートに直接書き込む
  * - 任意ページ: 元のシートを複製し、シート名をテーマ名（未設定時はページ名）にする
  * - 複製元になったオプションシートは最後に削除する
+ * @param fixedSheetColMap 固定ページのシート名ごとに書き込み列を上書きするマップ（省略時はデフォルト列8=H）
  */
 export function applyHpOutputsToWorkbook(
   wb: ExcelJS.Workbook,
   hpPageOutputs: Record<string, Record<string, string>>,
   sitemapItems: HpSitemapItem[],
-  pageThemes: Record<string, string>
+  pageThemes: Record<string, string>,
+  fixedSheetColMap?: Record<string, number>
 ): void {
   const findSheet = (name: string) =>
     wb.getWorksheet(name) ??
@@ -124,16 +126,22 @@ export function applyHpOutputsToWorkbook(
       const originalSheet = findSheet(originalSheetName);
       if (!originalSheet) continue;
 
-      cloneSources.add(originalSheetName);
-      const cloned = cloneWorksheet(wb, originalSheet, targetName);
-      writeContent(cloned, rowContents, 10); // 追加ページは J 列（列10）
+      if (targetName === originalSheetName) {
+        // 名前が変わらない場合はシートが既に存在するため複製せず直接書き込む
+        writeContent(originalSheet, rowContents, 10);
+      } else {
+        cloneSources.add(originalSheetName);
+        const cloned = cloneWorksheet(wb, originalSheet, targetName);
+        writeContent(cloned, rowContents, 10); // 追加ページは J 列（列10）
+      }
     } else {
       // 固定ページ: 元のシートに直接書き込む
       const sheet = findSheet(originalSheetName);
       if (!sheet) continue;
       directWritten.add(originalSheetName);
       usedFinalNames.add(originalSheetName);
-      writeContent(sheet, rowContents, 8); // 固定ページは H 列（列8）
+      const fixedCol = fixedSheetColMap?.[originalSheetName] ?? 8; // デフォルト H 列（列8）
+      writeContent(sheet, rowContents, fixedCol);
     }
   }
 

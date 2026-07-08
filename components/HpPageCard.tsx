@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import OutputTable, { type SelectedTarget } from "./OutputTable";
 
-interface Field { rn: number; section: string; label: string; condition?: string; }
+interface Field { rn: number; section: string; label: string; condition?: string; group?: string; }
 
 interface Props {
   instanceKey: string;
@@ -12,11 +12,13 @@ interface Props {
   rows: Record<number | string, string>;
   projectType: string;
   sheetName: string;
-  selectedTarget?: SelectedTarget | null;
-  onSelectField?: (target: SelectedTarget) => void;
+  selectedTargets?: SelectedTarget[];
+  onToggleField?: (target: SelectedTarget) => void;
+  onDeleteField?: (target: SelectedTarget) => void;
+  onEditField?: (target: SelectedTarget, value: string) => void;
 }
 
-export default function HpPageCard({ instanceKey, label, theme, rows, projectType, sheetName, selectedTarget, onSelectField }: Props) {
+export default function HpPageCard({ instanceKey, label, theme, rows, projectType, sheetName, selectedTargets = [], onToggleField, onDeleteField, onEditField }: Props) {
   const [fields, setFields] = useState<Field[]>([]);
 
   useEffect(() => {
@@ -31,18 +33,31 @@ export default function HpPageCard({ instanceKey, label, theme, rows, projectTyp
     if (value) outputMap[rn] = String(value);
   }
 
-  const selectedRn = selectedTarget?.instanceKey === instanceKey ? selectedTarget.rn : undefined;
+  const selectedRns = selectedTargets
+    .filter((target) => target.instanceKey === instanceKey && typeof target.rn === "number")
+    .map((target) => target.rn as number);
 
-  const handleSelectRow = (rn: number, section: string, fieldLabel: string, value: string) => {
-    onSelectField?.({
-      instanceKey,
-      pageLabel: label,
-      rn,
-      section,
-      label: fieldLabel,
-      currentValue: value,
-      displayText: `${label} › [${section}] ${fieldLabel}`,
-    });
+  const makeTarget = (rn: number, section: string, fieldLabel: string, value: string): SelectedTarget => ({
+    id: `hp:${instanceKey}:${rn}`,
+    instanceKey,
+    pageLabel: label,
+    rn,
+    section,
+    label: fieldLabel,
+    currentValue: value,
+    displayText: `${label} › [${section}] ${fieldLabel}`,
+  });
+
+  const handleToggleRow = (rn: number, section: string, fieldLabel: string, value: string) => {
+    onToggleField?.(makeTarget(rn, section, fieldLabel, value));
+  };
+
+  const handleDeleteRow = (rn: number, section: string, fieldLabel: string, value: string) => {
+    onDeleteField?.(makeTarget(rn, section, fieldLabel, value));
+  };
+
+  const handleEditRow = (rn: number, section: string, fieldLabel: string, value: string) => {
+    onEditField?.(makeTarget(rn, section, fieldLabel, value), value);
   };
 
   return (
@@ -57,8 +72,10 @@ export default function HpPageCard({ instanceKey, label, theme, rows, projectTyp
         <OutputTable
           fields={fields}
           output={outputMap}
-          selectedRn={selectedRn}
-          onSelectRow={onSelectField ? handleSelectRow : undefined}
+          selectedRns={selectedRns}
+          onToggleRow={onToggleField ? handleToggleRow : undefined}
+          onDeleteRow={onDeleteField ? handleDeleteRow : undefined}
+          onEditRow={onEditField ? handleEditRow : undefined}
         />
       ) : (
         <div className="p-5 space-y-1.5">

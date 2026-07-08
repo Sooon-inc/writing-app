@@ -41,7 +41,12 @@ export async function POST(req: NextRequest) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
 
-  applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes);
+  // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
+  const fixedSheetColMap = project.type === "hp-strong" ? {
+    "トップ": 9,               // I 列
+    "代表挨拶・スタッフ紹介": 7, // G 列
+  } : undefined;
+  applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes, fixedSheetColMap);
 
   const buffer = await wb.xlsx.writeBuffer();
   const fileName = encodeURIComponent(`${project.name}_HPヒアリングシート.xlsx`);

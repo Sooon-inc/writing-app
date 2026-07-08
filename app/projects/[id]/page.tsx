@@ -5,23 +5,103 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { HP_SITEMAPS } from "@/lib/hpSitemap";
 import type { SitemapPage } from "@/lib/hpSitemap";
-import { PORTAL_SECTION_GROUPS } from "@/lib/templates/portal";
 import ChatBot, { type ChatOutput, type UpdatePayload } from "@/components/ChatBot";
 import HpPageCard from "@/components/HpPageCard";
 import MeoOutputDisplay from "@/components/MeoOutputDisplay";
 import OutputTable, { type SelectedTarget } from "@/components/OutputTable";
-
-const typeLabels: Record<string, string> = {
-  meo: "MEO",
-  "hp-strong": "HP ストロング",
-  "hp-classic": "HP クラシック",
-  "hp-beauty": "HP ビューティー",
-  "hp-recruit": "HP リクルート",
-  lp: "LP",
-  portal: "ポータルサイト",
-};
+import PortalSheetPreview from "@/components/PortalSheetPreview";
+import { PROJECT_TYPE_LABELS } from "@/lib/projectTypes";
+import AppSidebar from "@/components/AppSidebar";
+import { normalizeMeoOutput } from "@/lib/meoOutput";
 
 const HP_TYPES = ["hp-classic", "hp-strong", "hp-beauty", "hp-recruit"];
+const SHEET_EXPORT_TIMEOUT_MS = 120000;
+const AUTH_CHECK_TIMEOUT_MS = 15000;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function setDeepValue(target: Record<string, unknown>, path: string, value: unknown) {
+  const parts = path.split(".").filter(Boolean);
+  if (parts.length === 0) return;
+  let current: Record<string, unknown> = target;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i];
+    if (!isPlainObject(current[key])) current[key] = {};
+    current = current[key] as Record<string, unknown>;
+  }
+  current[parts[parts.length - 1]] = value;
+}
+
+function applyOutputDiff(base: Record<string, unknown>, diff: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = structuredClone(base);
+  for (const [key, value] of Object.entries(diff)) {
+    if (key.includes(".")) {
+      setDeepValue(next, key, value);
+    } else if (isPlainObject(value) && isPlainObject(next[key])) {
+      next[key] = applyOutputDiff(next[key] as Record<string, unknown>, value);
+    } else {
+      next[key] = value;
+    }
+  }
+  return next;
+}
+
+function normalizeStoredOutput(type: string, value: unknown): Record<string, unknown> | null {
+  if (type === "meo") return normalizeMeoOutput(value);
+  return isPlainObject(value) ? value : null;
+}
+
+function replaceTextDeep<T>(value: T, search: string, replacement: string): { value: T; count: number } {
+  if (typeof value === "string") {
+    const count = value.split(search).length - 1;
+    return {
+      value: (count > 0 ? value.split(search).join(replacement) : value) as T,
+      count,
+    };
+  }
+  if (Array.isArray(value)) {
+    let count = 0;
+    const next = value.map((item) => {
+      const result = replaceTextDeep(item, search, replacement);
+      count += result.count;
+      return result.value;
+    });
+    return { value: next as T, count };
+  }
+  if (value && typeof value === "object") {
+    let count = 0;
+    const next = Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => {
+        const result = replaceTextDeep(child, search, replacement);
+        count += result.count;
+        return [key, result.value];
+      })
+    );
+    return { value: next as T, count };
+  }
+  return { value, count: 0 };
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = SHEET_EXPORT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`処理が${Math.round(timeoutMs / 1000)}秒以内に完了しませんでした。Google側の応答待ちで止まっている可能性があります。時間を置いて再度お試しください。`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
 
 // サイトマップの任意ページエントリー（固有IDで独立管理）
 interface SitemapItem {
@@ -38,6 +118,7 @@ interface Project {
   hpContent: string | null;
   gbpUrl: string | null;
   hearing: string | null;
+  industries: string | null;
   products: string | null;
   output: string | null;
   sitemap: string | null;
@@ -50,6 +131,7 @@ export default function ProjectDetailPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [hpUrl, setHpUrl] = useState("");
   const [hearing, setHearing] = useState("");
+  const [industries, setIndustries] = useState<string[]>([""]);
   const [products, setProducts] = useState<string[]>([""]);
   const [scraping, setScraping] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -59,11 +141,13 @@ export default function ProjectDetailPage() {
   const [gbpContent, setGbpContent] = useState("");
   const [scrapingGbp, setScrapingGbp] = useState(false);
   const [gbpScrapeError, setGbpScrapeError] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
 
   // ポータル専用
   const [portalGbpUrl, setPortalGbpUrl] = useState("");
   const [portalInstagram, setPortalInstagram] = useState("");
-  const [portalTiktok, setPortalTiktok] = useState("");
+  const [portalX, setPortalX] = useState("");
+  const [portalLine, setPortalLine] = useState("");
   const [portalYoutube, setPortalYoutube] = useState("");
   const [portalGenerating, setPortalGenerating] = useState(false);
   const [portalGenError, setPortalGenError] = useState("");
@@ -83,6 +167,10 @@ export default function ProjectDetailPage() {
   const isHpType = project ? HP_TYPES.includes(project.type) : false;
   const isLpType = project?.type === "lp";
   const isPortalType = project?.type === "portal";
+
+  useEffect(() => {
+    setAiOpen(window.innerWidth >= 1100);
+  }, []);
 
   // Fixed pages (always included)
   const fixedPages = sitemapPages.filter((p) => p.fixed);
@@ -128,14 +216,23 @@ export default function ProjectDetailPage() {
           setPortalGbpUrl(data.gbpUrl ?? "");
           if (data.sitemap) {
             try {
-              const s = JSON.parse(data.sitemap) as { sns?: { instagram?: string; tiktok?: string; youtube?: string } };
+              const s = JSON.parse(data.sitemap) as { sns?: { instagram?: string; x?: string; line?: string; youtube?: string } };
               setPortalInstagram(s.sns?.instagram ?? "");
-              setPortalTiktok(s.sns?.tiktok ?? "");
+              setPortalX(s.sns?.x ?? "");
+              setPortalLine(s.sns?.line ?? "");
               setPortalYoutube(s.sns?.youtube ?? "");
             } catch { /* ignore */ }
           }
         }
         setHearing(data.hearing ?? "");
+        if (data.industries) {
+          try {
+            const parsed = JSON.parse(data.industries) as string[];
+            setIndustries(parsed.length > 0 ? parsed : [""]);
+          } catch {
+            setIndustries([data.industries]);
+          }
+        }
         if (data.products) {
           try {
             const parsed = JSON.parse(data.products);
@@ -145,7 +242,10 @@ export default function ProjectDetailPage() {
           }
         }
         if (data.output) {
-          try { setOutput(JSON.parse(data.output)); } catch { /* ignore */ }
+          try {
+            const parsedOutput = JSON.parse(data.output);
+            setOutput(normalizeStoredOutput(data.type, parsedOutput));
+          } catch { /* ignore */ }
         }
         if (data.sitemap) {
           try {
@@ -237,10 +337,12 @@ export default function ProjectDetailPage() {
         gbpUrl: portalGbpUrl.trim(),
         sns: {
           instagram: portalInstagram.trim(),
-          tiktok: portalTiktok.trim(),
+          x: portalX.trim(),
+          line: portalLine.trim(),
           youtube: portalYoutube.trim(),
         },
         hearing,
+        industries: JSON.stringify(industries.filter((industry) => industry.trim())),
       }),
     });
     const data = await res.json();
@@ -260,7 +362,7 @@ export default function ProjectDetailPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${project?.name ?? "ポータル"}_原稿.xlsx`;
+    a.download = `${project?.name ?? "ポータル"}_Nexus-by-Homeヒアリングシート.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -269,24 +371,29 @@ export default function ProjectDetailPage() {
     setOpeningPortalSheet(true);
     setSheetError("");
     setSheetUrl(null);
-    const check = await fetch("/api/auth/google/check");
-    if (!check.ok) {
-      window.location.href = `/api/auth/google?projectId=${id}&sheetType=portal`;
-      return;
+    try {
+      const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
+      if (!check.ok) {
+        window.location.href = `/api/auth/google?projectId=${id}&sheetType=portal`;
+        return;
+      }
+      const res = await fetchWithTimeout("/api/export/portal/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output, projectName: project?.name }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setSheetError((errData as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
+        return;
+      }
+      const { url } = await res.json();
+      setSheetUrl(url);
+    } catch (error) {
+      setSheetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningPortalSheet(false);
     }
-    const res = await fetch("/api/export/portal/sheets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ output, projectName: project?.name }),
-    });
-    setOpeningPortalSheet(false);
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      setSheetError((errData as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
-      return;
-    }
-    const { url } = await res.json();
-    setSheetUrl(url);
   };
 
   const handleGenerate = async () => {
@@ -296,23 +403,28 @@ export default function ProjectDetailPage() {
     await fetch(`/api/projects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, products: JSON.stringify(filledProducts) }),
+      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), products: JSON.stringify(filledProducts) }),
     });
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, products: filledProducts, gbpContent }),
+      body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, industries: industries.filter((industry) => industry.trim()), products: filledProducts, gbpContent, gbpUrl: gbpUrl.trim() }),
     });
     const data = await res.json();
     setGenerating(false);
     if (!res.ok) { setGenError(data.error ?? "生成に失敗しました"); return; }
-    const outputJson = JSON.stringify(data.output);
+    const normalizedOutput = project?.type === "meo" ? normalizeMeoOutput(data.output) : data.output;
+    if (!normalizedOutput || !isPlainObject(normalizedOutput)) {
+      setGenError("生成結果の形式が不正です。再生成してください。");
+      return;
+    }
+    const outputJson = JSON.stringify(normalizedOutput);
     await fetch(`/api/projects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output: outputJson }),
     });
-    setOutput(data.output);
+    setOutput(normalizedOutput);
   };
 
   const handleGenerateHpPages = async () => {
@@ -352,11 +464,73 @@ export default function ProjectDetailPage() {
     await fetch(`/api/projects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, hpUrl, hpPageThemes: JSON.stringify(pageThemes) }),
+      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
     });
 
     const allOutputs: Record<string, Record<number, string>> = {};
     for (const item of allItems) {
+      setGeneratingSheet(item.label);
+      const res = await fetch("/api/generate-hp-pages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: id,
+          sheetName: item.sheetName,
+          instanceKey: item.instanceKey,
+          theme: item.theme,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setHpGenError(data.error ?? "生成に失敗しました");
+        setGeneratingHp(false);
+        setGeneratingSheet("");
+        return;
+      }
+      Object.assign(allOutputs, data.hpPageOutputs);
+    }
+
+    await fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
+    });
+
+    setHpPageOutputs(allOutputs);
+    setGeneratingHp(false);
+    setGeneratingSheet("");
+  };
+
+  const handleGenerateOptionalPages = async () => {
+    if (!project) return;
+    const sitemapConfig = HP_SITEMAPS[project.type] ?? [];
+
+    const optionalItems = sitemapItems
+      .filter((item) => item.sheetName)
+      .map((item) => {
+        const found = sitemapConfig.find((p) => p.sheetName === item.sheetName);
+        return {
+          sheetName: item.sheetName,
+          instanceKey: item.id,
+          theme: pageThemes[item.id] ?? "",
+          label: found ? found.label : item.sheetName,
+        };
+      });
+
+    if (optionalItems.length === 0) return;
+
+    setGeneratingHp(true);
+    setHpGenError("");
+
+    await fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
+    });
+
+    // 既存の出力を引き継ぎ、追加ページの出力のみ上書き
+    const allOutputs: Record<string, Record<number, string>> = { ...(hpPageOutputs ?? {}) };
+    for (const item of optionalItems) {
       setGeneratingSheet(item.label);
       const res = await fetch("/api/generate-hp-pages", {
         method: "POST",
@@ -406,7 +580,7 @@ export default function ProjectDetailPage() {
 
   const handleChatApply = async (updates: UpdatePayload) => {
     if (updates.kind === "output") {
-      const next = { ...(output ?? {}), ...updates.diff };
+      const next = applyOutputDiff(output ?? {}, updates.diff);
       setOutput(next);
       await fetch(`/api/projects/${id}`, {
         method: "PUT",
@@ -449,6 +623,113 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const handleReplaceAll = async (search: string, replacement: string): Promise<number> => {
+    if (!search) return 0;
+
+    if (isHpType && hpPageOutputs) {
+      const result = replaceTextDeep(hpPageOutputs, search, replacement);
+      if (result.count === 0) return 0;
+      setHpPageOutputs(result.value);
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hpPageOutputs: JSON.stringify(result.value) }),
+      });
+      return result.count;
+    }
+
+    if (isLpType && lpOutput) {
+      const result = replaceTextDeep(lpOutput, search, replacement);
+      if (result.count === 0) return 0;
+      setLpOutput(result.value);
+      const existingHpOut = (() => {
+        try { return JSON.parse(project?.hpPageOutputs ?? "{}") as Record<string, unknown>; }
+        catch { return {}; }
+      })();
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hpPageOutputs: JSON.stringify({ ...existingHpOut, LP: result.value }),
+        }),
+      });
+      return result.count;
+    }
+
+    if (output) {
+      const result = replaceTextDeep(output, search, replacement);
+      if (result.count === 0) return 0;
+      setOutput(result.value);
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output: JSON.stringify(result.value) }),
+      });
+      return result.count;
+    }
+
+    return 0;
+  };
+
+  const toggleSelectedTarget = (target: SelectedTarget) => {
+    setSelectedTargets((prev) =>
+      prev.some((item) => item.id === target.id)
+        ? prev.filter((item) => item.id !== target.id)
+        : [...prev, target]
+    );
+  };
+
+  const clearSelectedTargets = () => setSelectedTargets([]);
+
+  const handleDeleteTarget = async (target: SelectedTarget) => {
+    if (target.fieldKey) {
+      const emptyValue =
+        target.valueType === "boolean" ? false :
+        target.valueType === "array" ? [] :
+        target.valueType === "object" ? {} :
+        "";
+      await handleChatApply({
+        kind: "output",
+        diff: { [target.fieldKey]: emptyValue },
+      });
+    } else if (target.instanceKey === "LP" && typeof target.rn === "number") {
+      await handleChatApply({
+        kind: "lp",
+        diff: { [target.rn]: "" },
+      });
+    } else if (target.instanceKey && typeof target.rn === "number") {
+      await handleChatApply({
+        kind: "hp",
+        diff: { [target.instanceKey]: { [target.rn]: "" } },
+      });
+    }
+    setSelectedTargets((prev) => prev.filter((item) => item.id !== target.id));
+  };
+
+  const handleEditTarget = async (target: SelectedTarget, value: unknown) => {
+    if (target.fieldKey) {
+      await handleChatApply({
+        kind: "output",
+        diff: { [target.fieldKey]: value },
+      });
+    } else if (target.instanceKey === "LP" && typeof target.rn === "number") {
+      await handleChatApply({
+        kind: "lp",
+        diff: { [target.rn]: String(value ?? "") },
+      });
+    } else if (target.instanceKey && typeof target.rn === "number") {
+      await handleChatApply({
+        kind: "hp",
+        diff: { [target.instanceKey]: { [target.rn]: String(value ?? "") } },
+      });
+    }
+    setSelectedTargets((prev) =>
+      prev.map((item) =>
+        item.id === target.id ? { ...item, currentValue: typeof value === "string" ? value : JSON.stringify(value) } : item
+      )
+    );
+  };
+
   // LP state
   // Sheets export loading states
   const [openingHpSheet, setOpeningHpSheet] = useState(false);
@@ -459,14 +740,21 @@ export default function ProjectDetailPage() {
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState("");
 
-  // OAuth後にURLパラメータ openSheet があれば自動実行
+  // OAuth後にURLパラメータ openSheet / authError があれば処理
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const openSheet = params.get("openSheet");
+    const authError = params.get("authError");
+    const url = new URL(window.location.href);
     if (openSheet) {
       setPendingOpenSheet(openSheet);
-      const url = new URL(window.location.href);
       url.searchParams.delete("openSheet");
+    }
+    if (authError) {
+      setSheetError(`Google認証エラー: ${authError}`);
+      url.searchParams.delete("authError");
+    }
+    if (openSheet || authError) {
       window.history.replaceState({}, "", url.toString());
     }
   }, []);
@@ -475,72 +763,87 @@ export default function ProjectDetailPage() {
     setOpeningHpSheet(true);
     setSheetError("");
     setSheetUrl(null);
-    const check = await fetch("/api/auth/google/check");
-    if (!check.ok) {
-      window.location.href = `/api/auth/google?projectId=${id}&sheetType=hp`;
-      return;
+    try {
+      const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
+      if (!check.ok) {
+        window.location.href = `/api/auth/google?projectId=${id}&sheetType=hp`;
+        return;
+      }
+      const res = await fetchWithTimeout("/api/export/hp/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
+        return;
+      }
+      const { url } = await res.json();
+      setSheetUrl(url);
+    } catch (error) {
+      setSheetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningHpSheet(false);
     }
-    const res = await fetch("/api/export/hp/sheets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: id }),
-    });
-    setOpeningHpSheet(false);
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
-      return;
-    }
-    const { url } = await res.json();
-    setSheetUrl(url);
   };
 
   const handleOpenLpSheet = async () => {
     setOpeningLpSheet(true);
     setSheetError("");
     setSheetUrl(null);
-    const check = await fetch("/api/auth/google/check");
-    if (!check.ok) {
-      window.location.href = `/api/auth/google?projectId=${id}&sheetType=lp`;
-      return;
+    try {
+      const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
+      if (!check.ok) {
+        window.location.href = `/api/auth/google?projectId=${id}&sheetType=lp`;
+        return;
+      }
+      const res = await fetchWithTimeout("/api/export/lp/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
+        return;
+      }
+      const { url } = await res.json();
+      setSheetUrl(url);
+    } catch (error) {
+      setSheetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningLpSheet(false);
     }
-    const res = await fetch("/api/export/lp/sheets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: id }),
-    });
-    setOpeningLpSheet(false);
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
-      return;
-    }
-    const { url } = await res.json();
-    setSheetUrl(url);
   };
 
   const handleOpenMeoSheet = async () => {
     setOpeningMeoSheet(true);
     setSheetError("");
     setSheetUrl(null);
-    const check = await fetch("/api/auth/google/check");
-    if (!check.ok) {
-      window.location.href = `/api/auth/google?projectId=${id}&sheetType=meo`;
-      return;
+    try {
+      const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
+      if (!check.ok) {
+        window.location.href = `/api/auth/google?projectId=${id}&sheetType=meo`;
+        return;
+      }
+      const res = await fetchWithTimeout("/api/export/meo/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output, projectName: project?.name, hpUrl }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
+        return;
+      }
+      const { url } = await res.json();
+      setSheetUrl(url);
+    } catch (error) {
+      setSheetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningMeoSheet(false);
     }
-    const res = await fetch("/api/export/meo/sheets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ output, projectName: project?.name, hpUrl }),
-    });
-    setOpeningMeoSheet(false);
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
-      return;
-    }
-    const { url } = await res.json();
-    setSheetUrl(url);
   };
 
   // LP state
@@ -549,7 +852,7 @@ export default function ProjectDetailPage() {
   const [generatingLp, setGeneratingLp] = useState(false);
   const [lpGenError, setLpGenError] = useState("");
   const [lpFieldDefs, setLpFieldDefs] = useState<{ rn: number; section: string; label: string; condition?: string }[]>([]);
-  const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
+  const [selectedTargets, setSelectedTargets] = useState<SelectedTarget[]>([]);
 
   useEffect(() => {
     if (isLpType && lpOutput && lpFieldDefs.length === 0) {
@@ -567,7 +870,7 @@ export default function ProjectDetailPage() {
     await fetch(`/api/projects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, hpUrl }),
+      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim() }),
     });
     const res = await fetch("/api/generate-lp", {
       method: "POST",
@@ -609,25 +912,25 @@ export default function ProjectDetailPage() {
       try {
         let res: Response;
         if (type === "hp") {
-          res = await fetch("/api/export/hp/sheets", {
+          res = await fetchWithTimeout("/api/export/hp/sheets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ projectId: id }),
           });
         } else if (type === "lp") {
-          res = await fetch("/api/export/lp/sheets", {
+          res = await fetchWithTimeout("/api/export/lp/sheets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ projectId: id }),
           });
         } else if (type === "portal") {
-          res = await fetch("/api/export/portal/sheets", {
+          res = await fetchWithTimeout("/api/export/portal/sheets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ output, projectName: project.name }),
           });
         } else {
-          res = await fetch("/api/export/meo/sheets", {
+          res = await fetchWithTimeout("/api/export/meo/sheets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ output, projectName: project.name, hpUrl }),
@@ -664,6 +967,11 @@ export default function ProjectDetailPage() {
     setProducts((prev) => prev.map((p, i) => (i === index ? value : p)));
   const removeProduct = (index: number) =>
     setProducts((prev) => { const next = prev.filter((_, i) => i !== index); return next.length > 0 ? next : [""]; });
+  const addIndustry = () => setIndustries((prev) => [...prev, ""]);
+  const updateIndustry = (index: number, value: string) =>
+    setIndustries((prev) => prev.map((industry, i) => (i === index ? value : industry)));
+  const removeIndustry = (index: number) =>
+    setIndustries((prev) => { const next = prev.filter((_, i) => i !== index); return next.length > 0 ? next : [""]; });
 
   if (!project) {
     return (
@@ -705,19 +1013,21 @@ export default function ProjectDetailPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="max-w-5xl mx-auto px-4 py-10">
-        <div className="mb-6">
-          <Link href="/" className="text-gray-400 hover:text-gray-600 text-sm">
-            ← 一覧に戻る
-          </Link>
-        </div>
-
-        <div className="flex items-center gap-3 mb-8">
-          <h1 className="text-xl font-bold text-gray-900">{project.name}</h1>
-          <span className="text-xs font-medium bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-            {typeLabels[project.type] ?? project.type}
-          </span>
+    <main className={`project-workspace ${aiOpen && chatOutput ? "with-ai" : ""}`}>
+      <AppSidebar selectedType={project.type} compact />
+      <div className="project-canvas">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-7">
+          <div>
+            <Link href="/" className="text-sky-500 hover:text-sky-600 text-xs font-medium">
+              ← ダッシュボード
+            </Link>
+            <div className="flex items-center gap-3 mt-3">
+              <h1 className="text-xl font-bold text-slate-700">{project.name}</h1>
+              <span className="text-xs font-medium bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full">
+                {PROJECT_TYPE_LABELS[project.type] ?? project.type}
+              </span>
+            </div>
+          </div>
         </div>
 
         {autoTriggerLoading && (
@@ -787,9 +1097,16 @@ export default function ProjectDetailPage() {
                   />
                   <input
                     type="url"
-                    value={portalTiktok}
-                    onChange={(e) => setPortalTiktok(e.target.value)}
-                    placeholder="TikTok: https://www.tiktok.com/..."
+                    value={portalX}
+                    onChange={(e) => setPortalX(e.target.value)}
+                    placeholder="X（Twitter）: https://x.com/..."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <input
+                    type="url"
+                    value={portalLine}
+                    onChange={(e) => setPortalLine(e.target.value)}
+                    placeholder="LINE公式: https://lin.ee/..."
                     className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   <input
@@ -831,6 +1148,42 @@ export default function ProjectDetailPage() {
           )}
 
           <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-sm font-medium text-gray-700">
+                業種
+                <span className="ml-1.5 text-xs text-gray-400 font-normal">（複数入力可能）</span>
+              </label>
+              <button type="button" onClick={addIndustry} className="text-xs text-sky-600 hover:text-sky-700 font-semibold">
+                ＋ 追加
+              </button>
+            </div>
+            <div className="space-y-2">
+              {industries.map((industry, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 w-5 text-right shrink-0">{index + 1}</span>
+                  <input
+                    type="text"
+                    value={industry}
+                    onChange={(event) => updateIndustry(index, event.target.value)}
+                    placeholder="例：住宅リフォーム、建築、外壁塗装"
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent"
+                  />
+                  {industries.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeIndustry(index)}
+                      className="w-8 h-8 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50"
+                      aria-label={`業種${index + 1}を削除`}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">ヒアリング内容</label>
             <textarea
               value={hearing}
@@ -841,7 +1194,7 @@ export default function ProjectDetailPage() {
             />
           </div>
 
-          {project.type === "meo" && (
+          {(project.type === "meo" || isHpType || isLpType) && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
                 GBP URL
@@ -852,7 +1205,7 @@ export default function ProjectDetailPage() {
                   type="url"
                   value={gbpUrl}
                   onChange={(e) => setGbpUrl(e.target.value)}
-                  placeholder="https://business.google.com/... または maps.google.com/..."
+                  placeholder="https://maps.app.goo.gl/... または maps.google.com/..."
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <button
@@ -979,9 +1332,12 @@ export default function ProjectDetailPage() {
                     <OutputTable
                       fields={lpFieldDefs}
                       output={Object.fromEntries(Object.entries(lpOutput).map(([k, v]) => [k, String(v)]))}
-                      selectedRn={selectedTarget?.instanceKey === "LP" ? selectedTarget.rn : undefined}
-                      onSelectRow={(rn, section, label, value) =>
-                        setSelectedTarget({
+                      selectedRns={selectedTargets
+                        .filter((target) => target.instanceKey === "LP" && typeof target.rn === "number")
+                        .map((target) => target.rn as number)}
+                      onToggleRow={(rn, section, label, value) =>
+                        toggleSelectedTarget({
+                          id: `lp:LP:${rn}`,
                           instanceKey: "LP",
                           pageLabel: "LP",
                           rn,
@@ -990,6 +1346,30 @@ export default function ProjectDetailPage() {
                           currentValue: value,
                           displayText: `LP › [${section}] ${label}`,
                         })
+                      }
+                      onDeleteRow={(rn, section, label, value) =>
+                        handleDeleteTarget({
+                          id: `lp:LP:${rn}`,
+                          instanceKey: "LP",
+                          pageLabel: "LP",
+                          rn,
+                          section,
+                          label,
+                          currentValue: value,
+                          displayText: `LP › [${section}] ${label}`,
+                        })
+                      }
+                      onEditRow={(rn, section, label, value) =>
+                        handleEditTarget({
+                          id: `lp:LP:${rn}`,
+                          instanceKey: "LP",
+                          pageLabel: "LP",
+                          rn,
+                          section,
+                          label,
+                          currentValue: value,
+                          displayText: `LP › [${section}] ${label}`,
+                        }, value)
                       }
                     />
                   ) : (
@@ -1085,22 +1465,40 @@ export default function ProjectDetailPage() {
             </div>
 
             {/* Generate button */}
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <p className="text-xs text-gray-400 mb-3">
-                生成対象: {pagesToGenerateLabels.length}ページ
-                {pagesToGenerateLabels.length > 0 && (
-                  <span className="ml-1 text-gray-300">({pagesToGenerateLabels.join(" / ")})</span>
-                )}
-              </p>
-              <button
-                onClick={handleGenerateHpPages}
-                disabled={generatingHp}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold py-3 rounded-xl transition-colors"
-              >
-                {generatingHp
-                  ? `生成中... ${generatingSheet ? `(${generatingSheet})` : ""}`
-                  : "全ページ生成"}
-              </button>
+            <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
+              {sitemapItems.filter((i) => i.sheetName).length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-400 mb-2">
+                    追加ページ: {sitemapItems.filter((i) => i.sheetName).map((item) => {
+                      const found = sitemapConfig.find((p) => p.sheetName === item.sheetName);
+                      return found ? found.label : item.sheetName;
+                    }).join(" / ")}
+                  </p>
+                  <button
+                    onClick={handleGenerateOptionalPages}
+                    disabled={generatingHp}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold py-3 rounded-xl transition-colors"
+                  >
+                    {generatingHp
+                      ? `生成中... ${generatingSheet ? `(${generatingSheet})` : ""}`
+                      : "追加ページを生成"}
+                  </button>
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-gray-400 mb-2">
+                  全ページ: {pagesToGenerateLabels.join(" / ")}
+                </p>
+                <button
+                  onClick={handleGenerateHpPages}
+                  disabled={generatingHp}
+                  className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-300 text-white font-semibold py-3 rounded-xl transition-colors"
+                >
+                  {generatingHp
+                    ? `生成中... ${generatingSheet ? `(${generatingSheet})` : ""}`
+                    : "全ページ生成（固定＋追加）"}
+                </button>
+              </div>
               {hpGenError && <p className="text-red-500 text-xs mt-2">{hpGenError}</p>}
             </div>
 
@@ -1143,8 +1541,10 @@ export default function ProjectDetailPage() {
                       rows={rows}
                       projectType={project.type}
                       sheetName={sheetName}
-                      selectedTarget={selectedTarget}
-                      onSelectField={setSelectedTarget}
+                      selectedTargets={selectedTargets}
+                      onToggleField={toggleSelectedTarget}
+                      onDeleteField={handleDeleteTarget}
+                      onEditField={handleEditTarget}
                     />
                   );
                 })}
@@ -1229,23 +1629,21 @@ export default function ProjectDetailPage() {
                   )}
                 </div>
                 {isPortalType ? (
-                  PORTAL_SECTION_GROUPS.map((group) => (
-                    <div key={group.label} className="bg-white rounded-xl border border-gray-200 p-5">
-                      <h3 className="font-semibold text-gray-700 text-sm mb-3 pb-2 border-b border-gray-100">{group.label}</h3>
-                      <div className="grid grid-cols-2 gap-3">
-                        {(group.keys as readonly string[]).map((key) => (
-                          <div key={key} className="space-y-0.5">
-                            <p className="text-xs font-medium text-gray-500">{key}</p>
-                            <p className="text-sm text-gray-800 bg-amber-50 rounded px-2 py-1.5 min-h-[2rem] whitespace-pre-wrap">
-                              {String((output as Record<string, unknown>)[key] ?? "記載なし")}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))
+                  <PortalSheetPreview
+                    output={output as Record<string, unknown>}
+                    selectedTargets={selectedTargets}
+                    onToggleField={toggleSelectedTarget}
+                    onDeleteField={handleDeleteTarget}
+                    onEditField={handleEditTarget}
+                  />
                 ) : (
-                  <MeoOutputDisplay output={output} />
+                  <MeoOutputDisplay
+                    output={output}
+                    selectedTargets={selectedTargets}
+                    onToggleField={toggleSelectedTarget}
+                    onDeleteField={handleDeleteTarget}
+                    onEditField={handleEditTarget}
+                  />
                 )}
               </div>
             )}
@@ -1254,13 +1652,30 @@ export default function ProjectDetailPage() {
       </div>
 
       {chatOutput && (
+        <button type="button" onClick={() => setAiOpen((open) => !open)} className="ai-toggle ai-toggle-floating">
+          <span>{aiOpen ? "◧" : "◨"}</span>
+          {aiOpen ? "AI欄を閉じる" : "AI欄を開く"}
+          {selectedTargets.length > 0 && (
+            <span className="min-w-5 h-5 px-1 rounded-full bg-sky-500 text-white grid place-items-center text-[10px]">
+              {selectedTargets.length}
+            </span>
+          )}
+        </button>
+      )}
+
+      {chatOutput && aiOpen && (
+        <aside className="ai-column">
         <ChatBot
           projectId={id}
           currentOutput={chatOutput}
           onApply={handleChatApply}
-          selectedTarget={selectedTarget}
-          onClearTarget={() => setSelectedTarget(null)}
+          selectedTargets={selectedTargets}
+          onClearTargets={clearSelectedTargets}
+          onReplaceAll={handleReplaceAll}
+          embedded
+          onClose={() => setAiOpen(false)}
         />
+        </aside>
       )}
     </main>
   );

@@ -9,6 +9,11 @@ export const meoSystemPrompt = `あなたはMEO対策の初期設計を行うマ
 - MEO対策を意識した構成にすること
 - 顧客目線を必ず守ること
 - 「当社」ではなく会社名・店舗名を使うこと
+- Googleのローカル検索は関連性・距離・知名度を主な要素とするため、順位保証や「必ず上位表示」などの断定は禁止
+- 地域名やキーワードを不自然に反復しないこと
+- Web調査の業界トレンドは顧客ニーズと構成の参考に限定し、その会社固有の実績・特徴として書かないこと
+- ビジネス説明にはURL、価格訴求、セール、キャンペーン、誇大表現を入れないこと
+- カテゴリは少数かつ具体的にし、サービスをすべてカテゴリ化しないこと
 
 必ず以下のJSON形式で出力してください（コードブロックなし、JSONのみ）:
 {
@@ -109,11 +114,12 @@ export const meoSystemPrompt = `あなたはMEO対策の初期設計を行うマ
 - 入力された商品・サービスが8個以上の場合は「商品サービス提案」は空配列（[]）にすること
 - 提案内容はビジネスの実態に合った現実的なものにすること（ハルシネーション禁止）`;
 
-export function meoUserPrompt(hpContent: string, hearing: string, products: string[], searchInfo?: string, gbpContent?: string): string {
+export function meoUserPrompt(hpContent: string, hearing: string, products: string[], searchInfo?: string, gbpContent?: string, researchInfo?: string): string {
   const parts = [];
   if (hpContent) parts.push(`【HPから取得した情報】\n${hpContent}`);
   if (gbpContent) parts.push(`【Googleビジネスプロフィール（GBP）から取得した情報（住所・電話番号・営業時間などの事実情報として最優先で使用）】\n${gbpContent}`);
   if (searchInfo) parts.push(`【Web検索結果（住所・最寄り駅・電話番号などの事実情報として優先使用）】\n${searchInfo}`);
+  if (researchInfo) parts.push(`【地域・業種トレンド調査（顧客ニーズと表現方針の参考情報。会社固有の事実には使用禁止）】\n${researchInfo}`);
   if (hearing) parts.push(`【ヒアリング内容】\n${hearing}`);
   if (products.length > 0) {
     const suggestion = products.length < 8

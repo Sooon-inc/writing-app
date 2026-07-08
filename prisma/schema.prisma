@@ -15,6 +15,7 @@ model Project {
   hpContent String?
   gbpUrl    String?
   hearing   String?
+  industries String?
   products      String?
   output        String?
   sitemap       String?

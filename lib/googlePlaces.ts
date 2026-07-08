@@ -15,6 +15,7 @@ const DETAIL_FIELDS_FULL = [
   "rating",
   "user_ratings_total",
   "website",
+  "geometry",
 ].join(",");
 
 // 基本フィールドのみ（課金不要・制限なしで取得できる）
@@ -23,6 +24,7 @@ const DETAIL_FIELDS_BASIC = [
   "formatted_address",
   "formatted_phone_number",
   "website",
+  "geometry",
 ].join(",");
 
 export interface PlaceInfo {
@@ -33,6 +35,14 @@ export interface PlaceInfo {
   rating: string;
   website: string;
   placeId: string;
+  latitude: string;
+  longitude: string;
+}
+
+export interface NearestStationInfo {
+  name: string;
+  distanceMeters: number;
+  vicinity: string;
 }
 
 /** ChIJ 形式の place_id が URL に直接含まれる場合に抽出 */
@@ -62,6 +72,35 @@ function extractLatLng(url: string): { lat: number; lng: number } | null {
   const match = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (match) return { lat: parseFloat(match[1]), lng: parseFloat(match[2]) };
   return null;
+}
+
+function toRadians(value: number): number {
+  return (value * Math.PI) / 180;
+}
+
+function distanceMeters(
+  from: { lat: number; lng: number },
+  to: { lat: number; lng: number }
+): number {
+  const earthRadiusMeters = 6371000;
+  const dLat = toRadians(to.lat - from.lat);
+  const dLng = toRadians(to.lng - from.lng);
+  const lat1 = toRadians(from.lat);
+  const lat2 = toRadians(to.lat);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return Math.round(earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function formatDistance(meters: number): string {
+  if (meters < 1000) return `約${meters}m`;
+  return `約${(meters / 1000).toFixed(1)}km`;
+}
+
+function formatNearestStation(station: NearestStationInfo): string {
+  const name = station.name.endsWith("駅") ? station.name : `${station.name}駅`;
+  return `${name}（${formatDistance(station.distanceMeters)}）`;
 }
 
 /** URL data 部の 0xHIGH:0xLOW から CID（10進数文字列）を取得 */
@@ -144,6 +183,58 @@ async function findPlaceIdByText(
   return "";
 }
 
+async function fetchNearestStation(
+  latLng: { lat: number; lng: number },
+  apiKey: string
+): Promise<NearestStationInfo | null> {
+  type NearbyResult = {
+    results?: Array<{
+      name?: string;
+      vicinity?: string;
+      geometry?: { location?: { lat?: number; lng?: number } };
+      types?: string[];
+    }>;
+    status?: string;
+  };
+
+  const stationTypes = ["train_station", "subway_station", "transit_station"];
+  const candidates: NearestStationInfo[] = [];
+
+  for (const type of stationTypes) {
+    const endpoint =
+      `${PLACES_BASE}/nearbysearch/json` +
+      `?location=${latLng.lat},${latLng.lng}` +
+      `&rankby=distance` +
+      `&type=${type}` +
+      `&language=ja` +
+      `&key=${apiKey}`;
+
+    try {
+      const res = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
+      const data = (await res.json()) as NearbyResult;
+      console.log(`[places] nearest station search ${type} status:`, data.status, "results:", data.results?.length ?? 0);
+
+      for (const result of data.results ?? []) {
+        const stationLat = result.geometry?.location?.lat;
+        const stationLng = result.geometry?.location?.lng;
+        const name = result.name?.trim();
+        if (!name || stationLat == null || stationLng == null) continue;
+
+        candidates.push({
+          name,
+          vicinity: result.vicinity ?? "",
+          distanceMeters: distanceMeters(latLng, { lat: stationLat, lng: stationLng }),
+        });
+      }
+    } catch (e) {
+      console.warn(`[places] nearest station search ${type} failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  candidates.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return candidates[0] ?? null;
+}
+
 /** place_id から店舗詳細を取得（フル版が失敗したら基本フィールドのみでリトライ） */
 async function fetchPlaceDetails(placeId: string, apiKey: string): Promise<PlaceInfo> {
   type RawResult = {
@@ -155,6 +246,7 @@ async function fetchPlaceDetails(placeId: string, apiKey: string): Promise<Place
       rating?: number;
       user_ratings_total?: number;
       website?: string;
+      geometry?: { location?: { lat?: number; lng?: number } };
     };
     status?: string;
   };
@@ -193,6 +285,8 @@ async function fetchPlaceDetails(placeId: string, apiKey: string): Promise<Place
         : "",
     website: r.website ?? "",
     placeId,
+    latitude: r.geometry?.location?.lat != null ? String(r.geometry.location.lat) : "",
+    longitude: r.geometry?.location?.lng != null ? String(r.geometry.location.lng) : "",
   };
 }
 
@@ -257,6 +351,14 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
     console.log("[places] resolved place_id:", placeId);
     const info = await fetchPlaceDetails(placeId, apiKey);
     console.log("[places] fetched:", info.name, info.address);
+    const placeLatLng =
+      info.latitude && info.longitude
+        ? { lat: Number(info.latitude), lng: Number(info.longitude) }
+        : latLng;
+    const nearestStation = placeLatLng ? await fetchNearestStation(placeLatLng, apiKey) : null;
+    if (nearestStation) {
+      console.log("[places] nearest station:", nearestStation.name, nearestStation.distanceMeters);
+    }
 
     return [
       info.name    ? `【店舗名】${info.name}` : "",
@@ -265,6 +367,10 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
       info.hours   ? `【営業時間】${info.hours}` : "",
       info.rating  ? `【評価】${info.rating}` : "",
       info.website ? `【Webサイト】${info.website}` : "",
+      nearestStation ? `【最寄り駅】${formatNearestStation(nearestStation)}` : "",
+      info.placeId  ? `【Place ID】${info.placeId}` : "",
+      info.latitude ? `【緯度】${info.latitude}` : "",
+      info.longitude ? `【経度】${info.longitude}` : "",
     ]
       .filter(Boolean)
       .join("\n");

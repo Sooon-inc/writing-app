@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as ExcelJS from "exceljs";
 import path from "path";
-import { Readable } from "stream";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
+import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { prisma } from "@/lib/prisma";
+import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
 
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    `${req.nextUrl.origin}/api/auth/google/callback`
+    getGoogleRedirectUri(req)
   );
   oauth2Client.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
 
@@ -33,51 +34,38 @@ export async function POST(req: NextRequest) {
   const outputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
   const lpRows = outputs["LP"] ?? {};
 
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(path.join(process.cwd(), LP_TEMPLATE_PATH));
-
-  const sheet = wb.getWorksheet("LP");
-  if (!sheet) return NextResponse.json({ error: "LP sheet not found" }, { status: 500 });
-
-  for (const [rowNumStr, value] of Object.entries(lpRows)) {
-    if (!value) continue;
-    const rowNum = parseInt(rowNumStr);
-    const row = sheet.getRow(rowNum);
-    const cell = row.getCell(10);
-    cell.value = value;
-    row.commit();
-  }
-
-  const buffer = await wb.xlsx.writeBuffer();
-
-  const drive = google.drive({ version: "v3", auth: oauth2Client });
-  let file;
+  let buffer: ExcelJS.Buffer;
   try {
-    file = await drive.files.create({
-      requestBody: {
-        name: `${project.name}_LPヒアリングシート`,
-        mimeType: "application/vnd.google-apps.spreadsheet",
-      },
-      media: {
-        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        body: Readable.from(Buffer.from(buffer)),
-      },
-      fields: "id,webViewLink",
-    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path.join(process.cwd(), LP_TEMPLATE_PATH));
+    const sheet = wb.getWorksheet("LP");
+    if (!sheet) throw new Error("LP sheet not found in template");
+    for (const [rowNumStr, value] of Object.entries(lpRows)) {
+      if (!value) continue;
+      const rowNum = parseInt(rowNumStr);
+      const row = sheet.getRow(rowNum);
+      const cell = row.getCell(10);
+      cell.value = value;
+      row.commit();
+    }
+    buffer = await wb.xlsx.writeBuffer();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("Drive files.create error:", msg);
-    return NextResponse.json({ error: `Drive API error: ${msg}` }, { status: 500 });
+    console.error("Excel build error:", msg);
+    return NextResponse.json({ error: `Excelファイル生成エラー: ${msg}` }, { status: 500 });
   }
 
   try {
-    await drive.permissions.create({
-      fileId: file.data.id!,
-      requestBody: { role: "writer", type: "anyone" },
-    });
+    const { webViewLink } = await uploadToGoogleSheets(
+      oauth2Client,
+      `${project.name}_LPヒアリングシート`,
+      Buffer.from(buffer),
+      DRIVE_FOLDER_IDS.lp
+    );
+    return NextResponse.json({ url: webViewLink });
   } catch (e: unknown) {
-    console.error("Drive permissions.create error:", e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("Drive upload error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  return NextResponse.json({ url: file.data.webViewLink });
 }

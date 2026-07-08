@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as ExcelJS from "exceljs";
 import path from "path";
-import { Readable } from "stream";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
+import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    `${req.nextUrl.origin}/api/auth/google/callback`
+    getGoogleRedirectUri(req)
   );
   oauth2Client.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
 
@@ -54,42 +55,34 @@ export async function POST(req: NextRequest) {
     if (project.hpPageThemes) pageThemes = JSON.parse(project.hpPageThemes) as Record<string, string>;
   } catch { /* ignore */ }
 
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
-
-  applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes);
-
-  const buffer = await wb.xlsx.writeBuffer();
-
-  const drive = google.drive({ version: "v3", auth: oauth2Client });
-  let file;
+  let buffer: ExcelJS.Buffer;
   try {
-    file = await drive.files.create({
-      requestBody: {
-        name: `${project.name}_HPヒアリングシート`,
-        mimeType: "application/vnd.google-apps.spreadsheet",
-      },
-      media: {
-        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        body: Readable.from(Buffer.from(buffer)),
-      },
-      fields: "id,webViewLink",
-    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
+    // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
+    const fixedSheetColMap = project.type === "hp-strong" ? {
+      "トップ": 9,               // I 列
+      "代表挨拶・スタッフ紹介": 7, // G 列
+    } : undefined;
+    applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes, fixedSheetColMap);
+    buffer = await wb.xlsx.writeBuffer();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("Drive files.create error:", msg);
-    return NextResponse.json({ error: `Drive API error: ${msg}` }, { status: 500 });
+    console.error("Excel build error:", msg);
+    return NextResponse.json({ error: `Excelファイル生成エラー: ${msg}` }, { status: 500 });
   }
 
   try {
-    await drive.permissions.create({
-      fileId: file.data.id!,
-      requestBody: { role: "writer", type: "anyone" },
-    });
+    const { webViewLink } = await uploadToGoogleSheets(
+      oauth2Client,
+      `${project.name}_HPヒアリングシート`,
+      Buffer.from(buffer),
+      DRIVE_FOLDER_IDS.hp
+    );
+    return NextResponse.json({ url: webViewLink });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("Drive permissions.create error:", msg);
+    console.error("Drive upload error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  return NextResponse.json({ url: file.data.webViewLink });
 }

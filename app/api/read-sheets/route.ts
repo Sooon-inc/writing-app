@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
-
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  "http://localhost:3000/api/auth/google/callback"
-);
+import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 function extractSheetId(url: string): string | null {
   const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -14,6 +9,12 @@ function extractSheetId(url: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    getGoogleRedirectUri(req)
+  );
+
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("g_access_token")?.value;
   const refreshToken = cookieStore.get("g_refresh_token")?.value;

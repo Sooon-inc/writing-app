@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
+import { getGoogleRedirectUri, getProjectRedirectUrl } from "@/lib/googleOAuth";
 
 export async function GET(req: NextRequest) {
   console.log("[auth/callback] called, url:", req.nextUrl.toString());
@@ -29,8 +30,7 @@ export async function GET(req: NextRequest) {
   }
   console.log("[auth/callback] projectId:", projectId, "sheetType:", sheetType);
 
-  // リクエストのoriginからコールバックURLを動的生成
-  const callbackUrl = `${req.nextUrl.origin}/api/auth/google/callback`;
+  const callbackUrl = getGoogleRedirectUri(req);
   console.log("[auth/callback] callbackUrl:", callbackUrl);
 
   const oauth2Client = new google.auth.OAuth2(
@@ -52,13 +52,12 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[auth/callback] getToken failed:", msg);
-    const errUrl = new URL(`/projects/${projectId || ""}`, req.nextUrl.origin);
+    const errUrl = getProjectRedirectUrl(req, projectId || "");
     errUrl.searchParams.set("authError", msg);
     return NextResponse.redirect(errUrl);
   }
 
-  const redirectUrl = new URL(`/projects/${projectId}`, req.nextUrl.origin);
-  if (sheetType) redirectUrl.searchParams.set("openSheet", sheetType);
+  const redirectUrl = getProjectRedirectUrl(req, projectId, sheetType);
 
   const res = NextResponse.redirect(redirectUrl);
 
@@ -76,6 +75,12 @@ export async function GET(req: NextRequest) {
       maxAge: 60 * 60 * 24 * 30,
     });
   }
+  // 既存フォルダへの保存権限で再認証済みであることを示す
+  res.cookies.set("g_drive_folder_access", "1", {
+    httpOnly: true,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30,
+  });
 
   return res;
 }

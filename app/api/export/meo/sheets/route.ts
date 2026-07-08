@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Readable } from "stream";
+import * as ExcelJS from "exceljs";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
 import { buildMeoWorkbook } from "@/lib/meoExcelBuilder";
+import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
@@ -15,43 +17,38 @@ export async function POST(req: NextRequest) {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    `${req.nextUrl.origin}/api/auth/google/callback`
+    getGoogleRedirectUri(req)
   );
   oauth2Client.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
 
-  const { output, projectName, hpUrl } = await req.json();
-
-  const workbook = buildMeoWorkbook(output, projectName ?? "", hpUrl ?? "");
-  const buffer = await workbook.xlsx.writeBuffer();
-
-  const drive = google.drive({ version: "v3", auth: oauth2Client });
-  let file;
+  let output, projectName, hpUrl;
   try {
-    file = await drive.files.create({
-      requestBody: {
-        name: `${projectName}_MEOヒアリングシート`,
-        mimeType: "application/vnd.google-apps.spreadsheet",
-      },
-      media: {
-        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        body: Readable.from(Buffer.from(buffer)),
-      },
-      fields: "id,webViewLink",
-    });
+    ({ output, projectName, hpUrl } = await req.json());
+  } catch (e) {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  let buffer: ExcelJS.Buffer;
+  try {
+    const workbook = await buildMeoWorkbook(output, projectName ?? "", hpUrl ?? "");
+    buffer = await workbook.xlsx.writeBuffer();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("Drive files.create error:", msg);
-    return NextResponse.json({ error: `Drive API error: ${msg}` }, { status: 500 });
+    console.error("Excel build error:", msg);
+    return NextResponse.json({ error: `Excelファイル生成エラー: ${msg}` }, { status: 500 });
   }
 
   try {
-    await drive.permissions.create({
-      fileId: file.data.id!,
-      requestBody: { role: "writer", type: "anyone" },
-    });
+    const { webViewLink } = await uploadToGoogleSheets(
+      oauth2Client,
+      `${projectName}_MEOヒアリングシート`,
+      Buffer.from(buffer),
+      DRIVE_FOLDER_IDS.meo
+    );
+    return NextResponse.json({ url: webViewLink });
   } catch (e: unknown) {
-    console.error("Drive permissions.create error:", e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("Drive upload error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  return NextResponse.json({ url: file.data.webViewLink });
 }

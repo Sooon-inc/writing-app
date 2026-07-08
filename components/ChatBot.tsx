@@ -20,22 +20,51 @@ interface Message {
   content: string;
   updates?: UpdatePayload | null;
   applied?: boolean;
+  instruction?: string;
+  targets?: SelectedTarget[];
+  learned?: boolean;
+  learning?: boolean;
+  learnError?: string;
 }
 
 interface Props {
   projectId: string;
   currentOutput: ChatOutput;
   onApply: (updates: UpdatePayload) => Promise<void>;
-  selectedTarget?: SelectedTarget | null;
-  onClearTarget?: () => void;
+  selectedTargets?: SelectedTarget[];
+  onClearTargets?: () => void;
+  embedded?: boolean;
+  onClose?: () => void;
+  onReplaceAll?: (search: string, replacement: string) => Promise<number>;
 }
 
-export default function ChatBot({ projectId, currentOutput, onApply, selectedTarget, onClearTarget }: Props) {
+function previewValue(value: unknown): string {
+  if (value && typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value ?? "");
+}
+
+export default function ChatBot({
+  projectId,
+  currentOutput,
+  onApply,
+  selectedTargets = [],
+  onClearTargets,
+  embedded = false,
+  onClose,
+  onReplaceAll,
+}: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
+  const [searchWord, setSearchWord] = useState("");
+  const [replacementWord, setReplacementWord] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [replaceResult, setReplaceResult] = useState("");
+  const [learningModal, setLearningModal] = useState<{ msgIndex: number; msg: Message } | null>(null);
+  const [learningBackground, setLearningBackground] = useState("");
+  const [learningSaving, setLearningSaving] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -46,8 +75,8 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
 
   // 選択が変わったらパネルを開く
   useEffect(() => {
-    if (selectedTarget) setIsOpen(true);
-  }, [selectedTarget]);
+    if (!embedded && selectedTargets.length > 0 && window.innerWidth >= 900) setIsOpen(true);
+  }, [embedded, selectedTargets.length]);
 
   const send = async () => {
     const trimmed = input.trim();
@@ -55,6 +84,7 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
 
     const userMessage: Message = { role: "user", content: trimmed };
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    const targetSnapshot = selectedTargets.map((target) => ({ ...target }));
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setSending(true);
@@ -68,13 +98,19 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
           message: trimmed,
           history,
           currentOutput,
-          selectedTarget: selectedTarget ?? null,
+          selectedTargets,
         }),
       });
       const data = await res.json() as { reply: string; updates?: UpdatePayload | null };
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.reply, updates: data.updates ?? null },
+        {
+          role: "assistant",
+          content: data.reply,
+          updates: data.updates ?? null,
+          instruction: trimmed,
+          targets: targetSnapshot,
+        },
       ]);
     } catch {
       setMessages((prev) => [
@@ -93,7 +129,63 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
       prev.map((m, i) => (i === msgIndex ? { ...m, applied: true } : m))
     );
     setApplying(null);
-    onClearTarget?.();
+    onClearTargets?.();
+  };
+
+  const openLearningModal = (msgIndex: number, msg: Message) => {
+    if (!msg.updates || msg.learned || msg.learning) return;
+    setLearningModal({ msgIndex, msg });
+    setLearningBackground("");
+  };
+
+  const closeLearningModal = (force = false) => {
+    if (learningSaving && !force) return;
+    setLearningModal(null);
+    setLearningBackground("");
+  };
+
+  const handleLearn = async (msgIndex: number, msg: Message, background: string) => {
+    if (!msg.updates || msg.learned || msg.learning) return;
+    setLearningSaving(true);
+    setMessages((prev) =>
+      prev.map((m, i) => (i === msgIndex ? { ...m, learning: true, learnError: "" } : m))
+    );
+    try {
+      const res = await fetch("/api/learning-memories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          outputType: currentOutput.type,
+          instruction: msg.instruction ?? "",
+          background,
+          assistantReply: msg.content,
+          updates: msg.updates,
+          targets: msg.targets ?? [],
+        }),
+      });
+      const data = await res.json().catch(() => ({})) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "学習保存に失敗しました");
+      setMessages((prev) =>
+        prev.map((m, i) => (i === msgIndex ? { ...m, learning: false, learned: true, learnError: "" } : m))
+      );
+      setLearningSaving(false);
+      closeLearningModal(true);
+    } catch (error) {
+      setLearningSaving(false);
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === msgIndex
+            ? { ...m, learning: false, learnError: error instanceof Error ? error.message : "学習保存に失敗しました" }
+            : m
+        )
+      );
+    }
+  };
+
+  const submitLearning = async () => {
+    if (!learningModal) return;
+    await handleLearn(learningModal.msgIndex, learningModal.msg, learningBackground);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -103,31 +195,49 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
     }
   };
 
-  const hasSelection = !!selectedTarget;
+  const hasSelection = selectedTargets.length > 0;
+
+  const replaceAll = async () => {
+    if (!searchWord || replacing || !onReplaceAll) return;
+    setReplacing(true);
+    setReplaceResult("");
+    try {
+      const count = await onReplaceAll(searchWord, replacementWord);
+      setReplaceResult(
+        count > 0
+          ? `${count}箇所を「${replacementWord || "（空欄）"}」へ置換しました`
+          : "一致する文字がありませんでした"
+      );
+    } catch {
+      setReplaceResult("置換に失敗しました");
+    } finally {
+      setReplacing(false);
+    }
+  };
 
   return (
     <>
-      {/* Floating button */}
-      <button
-        onClick={() => setIsOpen((o) => !o)}
-        className="fixed right-6 z-50 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-lg flex items-center justify-center transition-colors"
-        style={{ bottom: "50%", transform: "translateY(50%)" }}
-        title="修正アシスタント"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-          <path fillRule="evenodd" d="M4.804 21.644A6.707 6.707 0 006 21.75a6.721 6.721 0 003.583-1.029c.774.182 1.584.279 2.417.279 5.322 0 9.75-3.97 9.75-9 0-5.03-4.428-9-9.75-9s-9.75 3.97-9.75 9c0 2.409 1.025 4.587 2.674 6.192.232.226.277.428.254.543a3.73 3.73 0 01-.814 1.686.75.75 0 00.44 1.223 3.08 3.08 0 001.396-.114z" clipRule="evenodd" />
-        </svg>
-        {/* 選択中バッジ */}
-        {hasSelection && (
-          <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 rounded-full border-2 border-white" />
-        )}
-      </button>
+      {!embedded && (
+        <button
+          onClick={() => setIsOpen((o) => !o)}
+          className="fixed right-6 z-50 w-14 h-14 rounded-full bg-sky-500 hover:bg-sky-600 text-white shadow-lg flex items-center justify-center transition-colors"
+          style={{ bottom: "50%", transform: "translateY(50%)" }}
+          title="修正アシスタント"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+            <path fillRule="evenodd" d="M4.804 21.644A6.707 6.707 0 006 21.75a6.721 6.721 0 003.583-1.029c.774.182 1.584.279 2.417.279 5.322 0 9.75-3.97 9.75-9 0-5.03-4.428-9-9.75-9s-9.75 3.97-9.75 9c0 2.409 1.025 4.587 2.674 6.192.232.226.277.428.254.543a3.73 3.73 0 01-.814 1.686.75.75 0 00.44 1.223 3.08 3.08 0 001.396-.114z" clipRule="evenodd" />
+          </svg>
+          {hasSelection && <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 rounded-full border-2 border-white" />}
+        </button>
+      )}
 
       {/* Panel */}
-      {isOpen && (
+      {(embedded || isOpen) && (
         <div
-          className="fixed z-50 bg-white border border-gray-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-          style={{
+          className={embedded
+            ? "h-full bg-white flex flex-col overflow-hidden"
+            : "fixed z-50 bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden"}
+          style={embedded ? undefined : {
             right: "5.5rem",
             bottom: "50%",
             transform: "translateY(50%)",
@@ -136,25 +246,80 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
           }}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50 rounded-t-2xl">
+          <div className="flex items-center justify-between px-4 py-4 border-b border-sky-100 bg-gradient-to-r from-sky-50 to-white">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-blue-500" />
-              <span className="text-sm font-semibold text-gray-800">修正アシスタント</span>
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-sky-400 to-cyan-300 text-white grid place-items-center text-xs font-bold shadow-md shadow-sky-100">AI</div>
+              <div>
+                <span className="block text-sm font-semibold text-slate-700">修正アシスタント</span>
+                <span className="block text-[10px] text-slate-400">選択した文章をまとめて調整</span>
+              </div>
             </div>
             <button
-              onClick={() => setIsOpen(false)}
-              className="text-gray-400 hover:text-gray-600 text-lg leading-none w-6 h-6 flex items-center justify-center"
+              onClick={() => embedded ? onClose?.() : setIsOpen(false)}
+              className="text-slate-400 hover:text-slate-600 text-lg leading-none w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"
             >
               ×
             </button>
           </div>
+
+          {/* Global find and replace */}
+          {onReplaceAll && (
+            <div className="border-b border-sky-100 bg-sky-50/50 px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-bold text-slate-600">生成結果を一括置換</p>
+                <span className="text-[10px] text-slate-400">全ページ・全項目が対象</span>
+              </div>
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                <input
+                  type="text"
+                  value={searchWord}
+                  onChange={(event) => {
+                    setSearchWord(event.target.value);
+                    setReplaceResult("");
+                  }}
+                  placeholder="置換前"
+                  className="min-w-0 border border-slate-200 bg-white rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <span className="text-slate-300">→</span>
+                <input
+                  type="text"
+                  value={replacementWord}
+                  onChange={(event) => {
+                    setReplacementWord(event.target.value);
+                    setReplaceResult("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      replaceAll();
+                    }
+                  }}
+                  placeholder="置換後（空欄で削除）"
+                  className="min-w-0 border border-slate-200 bg-white rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-sky-300"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={replaceAll}
+                disabled={!searchWord || replacing}
+                className="mt-2 w-full rounded-lg bg-sky-500 hover:bg-sky-600 disabled:bg-slate-200 text-white py-2 text-xs font-bold"
+              >
+                {replacing ? "置換中..." : "すべて置換"}
+              </button>
+              {replaceResult && (
+                <p className={`mt-1.5 text-[11px] ${replaceResult.includes("失敗") ? "text-red-500" : "text-sky-700"}`}>
+                  {replaceResult}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
             {messages.length === 0 && (
               <div className="text-center mt-4 space-y-2">
                 <p className="text-xs text-gray-400">
-                  出力の行をクリックして修正対象を選んでから<br />修正内容を入力してください
+                  出力の左側チェックで修正対象を選んでから<br />同じ指示でまとめて修正できます
                 </p>
               </div>
             )}
@@ -179,7 +344,7 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
                         {msg.updates.kind === "output" &&
                           Object.entries(msg.updates.diff).map(([k, v]) => (
                             <div key={k}>
-                              <span className="text-gray-500">{k}:</span> {String(v)}
+                              <span className="text-gray-500">{k}:</span> <span className="whitespace-pre-wrap">{previewValue(v)}</span>
                             </div>
                           ))}
                         {msg.updates.kind === "lp" &&
@@ -205,7 +370,26 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
                           ))}
                       </div>
                       {msg.applied ? (
-                        <p className="text-xs text-green-600 font-medium">✓ 適用済み</p>
+                        <div className="space-y-2">
+                          <p className="text-xs text-green-600 font-medium">✓ 適用済み</p>
+                          {msg.learned ? (
+                            <p className="rounded-lg bg-sky-50 px-2 py-1.5 text-xs font-medium text-sky-700">
+                              ✓ 今回の修正を学習済み
+                            </p>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openLearningModal(i, msg)}
+                              disabled={msg.learning}
+                              className="w-full rounded-lg border border-sky-200 bg-white py-1.5 text-xs font-semibold text-sky-600 hover:bg-sky-50 disabled:text-slate-300 disabled:border-slate-200"
+                            >
+                              {msg.learning ? "学習保存中..." : "今回の修正を学習させる"}
+                            </button>
+                          )}
+                          {msg.learnError && (
+                            <p className="text-[11px] text-red-500">{msg.learnError}</p>
+                          )}
+                        </div>
                       ) : (
                         <button
                           onClick={() => handleApply(i, msg.updates!)}
@@ -233,19 +417,30 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
           {/* Input */}
           <div className="border-t border-gray-100 px-3 py-3 space-y-2">
             {/* 選択中の修正対象チップ */}
-            {selectedTarget && (
-              <div className="flex items-center gap-1.5 bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5">
+            {hasSelection && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5">
+                <div className="flex items-center gap-1.5">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 text-blue-500 shrink-0">
                   <path d="M9.25 13.25a.75.75 0 001.5 0V4.636l2.955 3.129a.75.75 0 001.09-1.03l-4.25-4.5a.75.75 0 00-1.09 0l-4.25 4.5a.75.75 0 101.09 1.03L9.25 4.636v8.614z" />
                   <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
                 </svg>
-                <span className="text-xs text-blue-700 flex-1 truncate font-medium">{selectedTarget.displayText}</span>
+                <span className="text-xs text-blue-700 flex-1 truncate font-medium">
+                  {selectedTargets.length}件を選択中
+                </span>
                 <button
-                  onClick={onClearTarget}
+                  onClick={onClearTargets}
                   className="text-blue-400 hover:text-blue-600 text-sm leading-none shrink-0"
                 >
                   ×
                 </button>
+                </div>
+                <div className="mt-1 max-h-20 overflow-y-auto space-y-0.5">
+                  {selectedTargets.map((target) => (
+                    <p key={target.id} className="truncate text-[11px] text-blue-700">
+                      {target.displayText}
+                    </p>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -254,7 +449,7 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={selectedTarget ? "修正内容を入力... (⌘+Enter で送信)" : "行をクリックして対象を選択 または 直接入力... (⌘+Enter で送信)"}
+                placeholder={hasSelection ? "選択中の項目へ同じ修正指示を入力... (⌘+Enter で送信)" : "左側チェックで対象を選択 または 直接入力... (⌘+Enter で送信)"}
                 rows={2}
                 className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
@@ -264,6 +459,59 @@ export default function ChatBot({ projectId, currentOutput, onApply, selectedTar
                 className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-xl px-3 py-2 text-sm font-medium transition-colors whitespace-nowrap"
               >
                 送信
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {learningModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/35 px-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h3 className="text-sm font-bold text-slate-700">今回の修正を学習させる</h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                なぜこの修正をしたのか、今後も守りたい判断基準を入力してください。
+              </p>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                <p className="text-[11px] font-semibold text-slate-500">修正指示</p>
+                <p className="mt-1 whitespace-pre-wrap text-xs text-slate-700">
+                  {learningModal.msg.instruction || "（指示なし）"}
+                </p>
+              </div>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600">修正の背景・意図</span>
+                <textarea
+                  value={learningBackground}
+                  onChange={(event) => setLearningBackground(event.target.value)}
+                  rows={5}
+                  autoFocus
+                  placeholder="例：専門用語が多すぎると読者が離脱するため、初心者にも伝わる表現を優先する。地域名は不自然に連呼せず、文脈上必要な箇所だけに入れる。"
+                  className="mt-1.5 w-full resize-none rounded-xl border border-slate-200 px-3 py-2 text-sm leading-relaxed focus:border-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                />
+              </label>
+              <p className="text-[11px] leading-relaxed text-slate-400">
+                入力内容は次回以降の修正アシスタントで、文体・判断基準・言い換え方の参考として使用します。
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => closeLearningModal()}
+                disabled={learningSaving}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={submitLearning}
+                disabled={learningSaving}
+                className="rounded-lg bg-sky-500 px-4 py-2 text-xs font-bold text-white hover:bg-sky-600 disabled:bg-slate-300"
+              >
+                {learningSaving ? "保存中..." : "背景も含めて学習する"}
               </button>
             </div>
           </div>

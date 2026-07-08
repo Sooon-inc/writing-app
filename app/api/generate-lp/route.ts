@@ -3,6 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
+import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
+import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 
 const client = new Anthropic();
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
@@ -49,7 +51,8 @@ async function generateLPContent(
   fields: LPField[],
   hpContent: string,
   hearing: string,
-  theme: string
+  theme: string,
+  gbpContent?: string
 ): Promise<Record<number, string>> {
   if (fields.length === 0) return {};
 
@@ -74,6 +77,7 @@ async function generateLPContent(
 
   const userPrompt = `${theme ? `【テーマ・キーワード】\n${theme}\n\n` : ""}【HP情報】
 ${hpContent || "（なし）"}
+${gbpContent ? `\n【Googleビジネスプロフィール情報（住所・電話番号・営業時間などの事実情報として優先使用）】\n${gbpContent}` : ""}
 
 【ヒアリング内容】
 ${hearing || "（なし）"}
@@ -114,23 +118,44 @@ export async function POST(req: NextRequest) {
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
 
+  // GBP URL が Google Maps URL なら Places API で情報取得
+  const isMapsUrl = (url: string) =>
+    url.includes("google.com/maps") ||
+    url.includes("maps.google.com") ||
+    url.includes("goo.gl") ||
+    url.includes("maps.app.goo.gl");
+  const gbpContent = project.gbpUrl && isMapsUrl(project.gbpUrl)
+    ? await getPlaceInfoFromMapsUrl(project.gbpUrl).catch(() => "")
+    : "";
+
   const fields = await extractLPFields();
+  const industries = (() => {
+    try { return JSON.parse(project.industries ?? "[]") as string[]; } catch { return []; }
+  })();
   const content = await generateLPContent(
     fields,
     project.hpContent ?? "",
-    project.hearing ?? "",
-    theme ?? ""
+    `【業種】${industries.join("、")}\n${project.hearing ?? ""}`,
+    theme ?? "",
+    gbpContent
   );
+  const checked = await reviewAndReviseMarketingJson(content, {
+    contentType: "LP",
+  });
 
   const themesJson = JSON.stringify({ LP: theme ?? "" });
 
   await prisma.project.update({
     where: { id: projectId },
     data: {
-      hpPageOutputs: JSON.stringify({ LP: content }),
+      hpPageOutputs: JSON.stringify({ LP: checked.output }),
       hpPageThemes: themesJson,
     },
   });
 
-  return NextResponse.json({ lpOutput: content });
+  return NextResponse.json({
+    lpOutput: checked.output,
+    qualityReview: checked.review,
+    qualityRevisionAttempts: checked.attempts,
+  });
 }

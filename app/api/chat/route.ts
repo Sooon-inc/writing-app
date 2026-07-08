@@ -4,6 +4,7 @@ import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
+import { formatLearningMemoriesForPrompt, listLearningMemories } from "@/lib/learningMemory";
 
 const client = new Anthropic();
 
@@ -183,28 +184,51 @@ function buildUpdatePayload(diff: Record<string, unknown>, outputType: string): 
   return { kind: "output", diff };
 }
 
+function formatUnknownForPrompt(value: unknown, indent = 0): string {
+  const pad = "  ".repeat(indent);
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) => `${pad}${index + 1}. ${formatUnknownForPrompt(item, indent + 1)}`).join("\n");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, child]) => `${pad}${key}: ${formatUnknownForPrompt(child, indent + 1)}`)
+      .join("\n");
+  }
+  return String(value);
+}
+
 // ── POST ─────────────────────────────────────────────────────────────
 
 interface SelectedTarget {
+  id?: string;
   instanceKey?: string;
   pageLabel?: string;
+  fieldKey?: string;
   rn?: number;
   section?: string;
   label?: string;
   currentValue?: string;
   displayText: string;
+  valueType?: "text" | "boolean";
 }
 
 export async function POST(req: NextRequest) {
-  const { projectId, message, history, currentOutput, selectedTarget } = (await req.json()) as {
+  const { projectId, message, history, currentOutput, selectedTarget, selectedTargets } = (await req.json()) as {
     projectId: string;
     message: string;
     history: { role: "user" | "assistant"; content: string }[];
     currentOutput: ChatOutput;
     selectedTarget?: SelectedTarget | null;
+    selectedTargets?: SelectedTarget[];
   };
 
   const formattedOutput = await formatOutputForPrompt(currentOutput, projectId);
+  const learningMemories = await listLearningMemories(currentOutput.type, 8);
+  const learningContext = formatLearningMemoriesForPrompt(learningMemories);
 
   const outputTypeLabel =
     currentOutput.type === "meo" ? "MEO原稿" :
@@ -217,22 +241,36 @@ export async function POST(req: NextRequest) {
       ? 'HP形式: {"ページキー（instanceKey）": {"行番号": "新しい値"}} — コンテキスト中の (行N) の番号を使うこと'
       : currentOutput.type === "lp"
       ? '{"行番号": "新しい値"} — コンテキスト中の (行N) の番号を使うこと'
+      : currentOutput.type === "meo"
+      ? 'MEO形式: {"フィールド名またはパス": 新しい値} — 例: {"基本情報.住所": "新住所", "強み": ["強み1", "強み2"], "商品サービス": [{...}]}。配列・オブジェクト項目は配列・オブジェクトのまま返すこと'
       : '{"フィールド名": "新しい値"} — 修正するフィールドのみ含める';
 
+  const targets = Array.isArray(selectedTargets) && selectedTargets.length > 0
+    ? selectedTargets
+    : selectedTarget
+    ? [selectedTarget]
+    : [];
+
   // 修正対象が指定されている場合の追加指示
-  const targetInstruction = selectedTarget
+  const targetInstruction = targets.length > 0
     ? (() => {
         const lines = [
           "",
           "【修正対象（ユーザーが指定）】",
-          `項目: ${selectedTarget.displayText}`,
+          `対象数: ${targets.length}`,
         ];
-        if (selectedTarget.instanceKey) lines.push(`ページキー: ${selectedTarget.instanceKey}`);
-        if (selectedTarget.rn) lines.push(`行番号: ${selectedTarget.rn}`);
-        if (selectedTarget.currentValue) lines.push(`現在の値: ${selectedTarget.currentValue}`);
+        targets.forEach((target, index) => {
+          lines.push(`\n${index + 1}. 項目: ${target.displayText}`);
+          if (target.instanceKey) lines.push(`ページキー: ${target.instanceKey}`);
+          if (target.fieldKey) lines.push(`フィールド名: ${target.fieldKey}`);
+          if (target.rn) lines.push(`行番号: ${target.rn}`);
+          if (target.valueType) lines.push(`値の形式: ${target.valueType}`);
+          if (target.currentValue) lines.push(`現在の値: ${target.currentValue}`);
+        });
         lines.push(
           "",
-          "⚠️ 上記の指定された項目のみを修正すること。他の項目は絶対に変更しないこと。",
+          "⚠️ 上記の指定された項目のみを、ユーザーの同じ指示に沿って修正すること。他の項目は絶対に変更しないこと。",
+          "複数項目が指定されている場合は、各項目の役割（タイトル・本文・質問・回答など）に合わせて自然に書き分けること。",
           "ユーザーが「追加して」と言った場合は、同じセクション内に新しい行を追加する提案をすること。",
         );
         return lines.join("\n");
@@ -243,7 +281,8 @@ export async function POST(req: NextRequest) {
 以下の生成済み${outputTypeLabel}コンテンツを参照し、ユーザーの修正依頼に日本語で丁寧に答えてください。
 ${targetInstruction}
 【現在のコンテンツ】
-${formattedOutput}
+${currentOutput.type === "meo" ? formatUnknownForPrompt(currentOutput.data) : formattedOutput}
+${learningContext ? `\n【過去にユーザーが学習させた修正例】\n${learningContext}\n\n【学習例の使い方】\n- 学習例は、文体・言い換え方・削除/追加の判断基準として参考にすること\n- ただし、今回の修正対象・業種・文脈と矛盾する内容はそのまま流用しないこと\n- 固有名詞・数字・住所・サービス名は現在のコンテンツとユーザー指示を優先すること` : ""}
 
 【修正がある場合のルール】
 - 回答の末尾に、必ず以下の形式の更新JSONブロックを含めること:
