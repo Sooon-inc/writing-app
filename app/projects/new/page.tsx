@@ -114,7 +114,8 @@ function NewProjectForm() {
     });
 
     if (!res.ok) {
-      setError("作成に失敗しました");
+      const data = await res.json().catch(() => ({}));
+      setError((data as { error?: string }).error ?? "作成に失敗しました");
       setLoading(false);
       return;
     }

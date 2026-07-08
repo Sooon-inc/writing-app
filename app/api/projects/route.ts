@@ -18,38 +18,59 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const {
-    name,
-    type,
-    hpUrl,
-    gbpUrl,
-    hearing,
-    industries,
-    products,
-    sitemap,
-    hpPageThemes,
-  } = await req.json();
-
-  if (!name || !type) {
-    return NextResponse.json(
-      { error: "name and type are required" },
-      { status: 400 }
-    );
-  }
-
-  const project = await prisma.project.create({
-    data: {
+  try {
+    const {
       name,
       type,
-      hpUrl: hpUrl || null,
-      gbpUrl: gbpUrl || null,
-      hearing: hearing || null,
-      industries: industries || null,
-      products: products || null,
-      sitemap: sitemap || null,
-      hpPageThemes: hpPageThemes || null,
-    },
-  });
+      hpUrl,
+      gbpUrl,
+      hearing,
+      industries,
+      products,
+      sitemap,
+      hpPageThemes,
+    } = await req.json();
 
-  return NextResponse.json(project, { status: 201 });
+    if (typeof name !== "string" || !name.trim() || typeof type !== "string" || !type.trim()) {
+      return NextResponse.json(
+        { error: "会社名と種別は必須です" },
+        { status: 400 }
+      );
+    }
+
+    const toNullableString = (value: unknown) =>
+      typeof value === "string" && value.trim() ? value : null;
+
+    const project = await prisma.project.create({
+      data: {
+        name: name.trim(),
+        type: type.trim(),
+        hpUrl: toNullableString(hpUrl),
+        gbpUrl: toNullableString(gbpUrl),
+        hearing: toNullableString(hearing),
+        industries: toNullableString(industries),
+        products: toNullableString(products),
+        sitemap: toNullableString(sitemap),
+        hpPageThemes: toNullableString(hpPageThemes),
+      },
+    });
+
+    return NextResponse.json(project, { status: 201 });
+  } catch (error) {
+    console.error("Failed to create project", error);
+
+    const message = error instanceof Error ? error.message : String(error);
+    const isSQLiteOnProduction =
+      process.env.VERCEL === "1" &&
+      (process.env.DATABASE_URL ?? "").startsWith("file:");
+
+    return NextResponse.json(
+      {
+        error: isSQLiteOnProduction
+          ? "本番環境のDATABASE_URLがSQLiteになっています。Vercelでは案件保存用にPostgreSQLなどの永続DBが必要です。"
+          : `案件の作成に失敗しました: ${message}`,
+      },
+      { status: 500 }
+    );
+  }
 }
