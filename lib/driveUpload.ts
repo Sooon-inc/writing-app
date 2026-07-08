@@ -39,6 +39,22 @@ function isSheetsApiDisabledError(message: string): boolean {
   );
 }
 
+async function makeFileShareableReadOnly(auth: OAuth2Client, fileId: string) {
+  const drive = google.drive({ version: "v3", auth });
+  await withTimeout(
+    drive.permissions.create({
+      fileId,
+      requestBody: {
+        type: "anyone",
+        role: "reader",
+      },
+      fields: "id",
+      supportsAllDrives: true,
+    }),
+    "Drive share permission"
+  );
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   label: string,
@@ -254,6 +270,18 @@ export async function uploadToGoogleSheets(
   }
 
   if (uploadedFile) {
+    try {
+      console.log("Drive share permission started:", uploadedFile.id);
+      await makeFileShareableReadOnly(auth, uploadedFile.id);
+      console.log("Drive share permission completed:", uploadedFile.id);
+    } catch (e) {
+      const msg = extractErrorMessage(e);
+      console.warn(
+        "The spreadsheet was created, but link sharing could not be enabled:",
+        msg
+      );
+    }
+
     try {
       console.log("Sheets checkbox restore started:", uploadedFile.id);
       await applyCheckboxesToSpreadsheet(auth, uploadedFile.id, buf);
