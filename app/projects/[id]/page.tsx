@@ -1422,6 +1422,7 @@ export default function ProjectDetailPage() {
                         ))}
                       </select>
                       <button
+                        type="button"
                         onClick={() => removeSitemapItem(index)}
                         className="text-gray-300 hover:text-red-400 transition-colors text-xl leading-none w-6 text-center shrink-0"
                       >
@@ -1431,6 +1432,7 @@ export default function ProjectDetailPage() {
                   ))}
                 </div>
                 <button
+                  type="button"
                   onClick={addSitemapItem}
                   disabled={availableOptions.length === 0}
                   className="mt-3 flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 disabled:text-gray-300 font-medium"

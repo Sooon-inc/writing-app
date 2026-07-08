@@ -9,6 +9,7 @@ import AppSidebar from "@/components/AppSidebar";
 
 const HP_TYPES = ["hp-classic", "hp-strong", "hp-beauty", "hp-recruit"];
 const makeId = () => Math.random().toString(36).slice(2, 10);
+type SitemapItem = { id: string; sheetName: string };
 
 function NewProjectForm() {
   const router = useRouter();
@@ -24,7 +25,7 @@ function NewProjectForm() {
   const [hearing, setHearing] = useState("");
   const [industries, setIndustries] = useState<string[]>([""]);
   const [products, setProducts] = useState<string[]>([""]);
-  const [selectedPages, setSelectedPages] = useState<Record<string, boolean>>({});
+  const [sitemapItems, setSitemapItems] = useState<SitemapItem[]>([]);
   const [pageThemes, setPageThemes] = useState<Record<string, string>>({});
   const [instagram, setInstagram] = useState("");
   const [xUrl, setXUrl] = useState("");
@@ -32,6 +33,28 @@ function NewProjectForm() {
   const [youtube, setYoutube] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const fixedPages = pages.filter((page) => page.fixed && page.sheetName);
+  const availableOptions = pages
+    .filter((page) => page.sheetName && !page.fixed)
+    .map((page) => ({ label: page.label, sheetName: page.sheetName! }));
+  const activePages = [
+    ...fixedPages.map((page) => ({
+      label: page.label,
+      sheetName: page.sheetName!,
+      themeKey: page.sheetName!,
+    })),
+    ...sitemapItems
+      .filter((item) => item.sheetName)
+      .map((item) => {
+        const found = pages.find((page) => page.sheetName === item.sheetName);
+        return {
+          label: found ? found.label : item.sheetName,
+          sheetName: item.sheetName,
+          themeKey: item.id,
+        };
+      }),
+  ];
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -48,15 +71,14 @@ function NewProjectForm() {
 
     if (isHpType) {
       const savedThemes: Record<string, string> = {};
-      pages.filter((page) => page.fixed && page.sheetName).forEach((page) => {
+      fixedPages.forEach((page) => {
         savedThemes[page.sheetName!] = pageThemes[page.sheetName!] ?? "";
       });
-      const selectedItems = pages
-        .filter((page) => !page.fixed && page.sheetName && selectedPages[page.sheetName])
-        .map((page) => {
-          const id = makeId();
-          savedThemes[id] = pageThemes[page.sheetName!] ?? "";
-          return { id, sheetName: page.sheetName! };
+      const selectedItems = sitemapItems
+        .filter((item) => item.sheetName)
+        .map((item) => {
+          savedThemes[item.id] = pageThemes[item.id] ?? "";
+          return { id: item.id, sheetName: item.sheetName };
         });
       sitemap = JSON.stringify(selectedItems);
       themes = JSON.stringify(savedThemes);
@@ -106,6 +128,16 @@ function NewProjectForm() {
   };
 
   const addIndustry = () => setIndustries((prev) => [...prev, ""]);
+  const addSitemapItem = () => setSitemapItems((prev) => [...prev, { id: makeId(), sheetName: "" }]);
+  const updateSitemapItem = (index: number, sheetName: string) => {
+    setSitemapItems((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, sheetName } : item));
+  };
+  const removeSitemapItem = (index: number) => {
+    setSitemapItems((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  };
+  const updatePageTheme = (key: string, value: string) => {
+    setPageThemes((prev) => ({ ...prev, [key]: value }));
+  };
 
   return (
     <main className="app-shell">
@@ -209,42 +241,75 @@ function NewProjectForm() {
             <section className="dashboard-card p-6 space-y-4">
               <div>
                 <h2 className="font-semibold text-gray-900">各ページの入力</h2>
-                <p className="text-xs text-gray-400 mt-1">作成するページを選び、テーマやキーワードを入力してください</p>
+                <p className="text-xs text-gray-400 mt-1">作成するページを追加し、テーマやキーワードを入力してください</p>
               </div>
-              {pages.filter((page) => page.sheetName).map((page) => {
-                const key = page.sheetName!;
-                const enabled = page.fixed || !!selectedPages[key];
-                return (
-                  <div key={key} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      {page.fixed ? (
-                        <span className="text-xs text-gray-400 w-4">●</span>
-                      ) : (
-                        <input
-                          type="checkbox"
-                          checked={enabled}
-                          onChange={(event) =>
-                            setSelectedPages((prev) => ({ ...prev, [key]: event.target.checked }))
-                          }
-                          className="rounded border-gray-300"
-                        />
-                      )}
-                      <span className="text-sm font-medium text-gray-800">{page.label}</span>
-                      {page.fixed && <span className="text-xs text-gray-400">固定</span>}
-                    </div>
-                    <input
-                      type="text"
-                      value={pageThemes[key] ?? ""}
-                      onChange={(event) =>
-                        setPageThemes((prev) => ({ ...prev, [key]: event.target.value }))
-                      }
-                      disabled={!enabled}
-                      placeholder="テーマ・キーワード"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="border border-gray-200 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-gray-800">ページ構成</h3>
+                    <button
+                      type="button"
+                      onClick={addSitemapItem}
+                      disabled={availableOptions.length === 0}
+                      className="text-xs text-sky-600 hover:text-sky-700 disabled:text-gray-300 font-semibold"
+                    >
+                      ＋ ページを追加
+                    </button>
                   </div>
-                );
-              })}
+                  <div className="space-y-2">
+                    {fixedPages.map((page) => (
+                      <div key={page.sheetName} className="flex items-center gap-2">
+                        <div className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-500">
+                          {page.label}
+                        </div>
+                        <span className="text-xs text-gray-400 w-8 text-center shrink-0">固定</span>
+                      </div>
+                    ))}
+                    {sitemapItems.map((item, index) => (
+                      <div key={item.id} className="flex items-center gap-2">
+                        <select
+                          value={item.sheetName}
+                          onChange={(event) => updateSitemapItem(index, event.target.value)}
+                          className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-400"
+                        >
+                          <option value="">（ページを選択）</option>
+                          {availableOptions.map((option) => (
+                            <option key={option.sheetName} value={option.sheetName}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => removeSitemapItem(index)}
+                          className="w-8 h-8 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50"
+                          aria-label={`追加ページ${index + 1}を削除`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="border border-gray-200 rounded-xl p-4">
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">テーマ・キーワード</h3>
+                  <div className="space-y-2">
+                    {activePages.map(({ label, themeKey }) => (
+                      <div key={themeKey}>
+                        <label className="block text-xs text-gray-500 mb-1">{label}</label>
+                        <input
+                          type="text"
+                          value={pageThemes[themeKey] ?? ""}
+                          onChange={(event) => updatePageTheme(themeKey, event.target.value)}
+                          placeholder="例：外壁塗装、防水工事、施工実績"
+                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </section>
           )}
 
