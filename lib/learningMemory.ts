@@ -19,32 +19,7 @@ interface LearningMemoryRow {
   assistantReply: string | null;
   updatesJson: string;
   targetsJson: string | null;
-  createdAt: string;
-}
-
-async function ensureLearningMemoryTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS LearningMemory (
-      id TEXT PRIMARY KEY,
-      projectId TEXT NOT NULL,
-      outputType TEXT NOT NULL,
-      instruction TEXT NOT NULL,
-      background TEXT,
-      assistantReply TEXT,
-      updatesJson TEXT NOT NULL,
-      targetsJson TEXT,
-      createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  try {
-    await prisma.$executeRawUnsafe(`ALTER TABLE LearningMemory ADD COLUMN background TEXT`);
-  } catch {
-    // 既に追加済みの場合は無視する
-  }
-  await prisma.$executeRawUnsafe(`
-    CREATE INDEX IF NOT EXISTS LearningMemory_outputType_createdAt_idx
-    ON LearningMemory(outputType, createdAt)
-  `);
+  createdAt: Date;
 }
 
 function makeId(): string {
@@ -59,7 +34,6 @@ function truncate(value: string, maxLength: number): string {
 }
 
 export async function createLearningMemory(input: LearningMemoryInput) {
-  await ensureLearningMemoryTable();
   const id = makeId();
   const instruction = truncate(input.instruction.trim(), 3000);
   const background = input.background ? truncate(input.background.trim(), 5000) : null;
@@ -67,23 +41,28 @@ export async function createLearningMemory(input: LearningMemoryInput) {
   const updatesJson = truncate(JSON.stringify(input.updates ?? {}), 20000);
   const targetsJson = input.targets == null ? null : truncate(JSON.stringify(input.targets), 20000);
 
-  await prisma.$executeRaw`
-    INSERT INTO LearningMemory (id, projectId, outputType, instruction, background, assistantReply, updatesJson, targetsJson)
-    VALUES (${id}, ${input.projectId}, ${input.outputType}, ${instruction}, ${background}, ${assistantReply}, ${updatesJson}, ${targetsJson})
-  `;
+  await prisma.learningMemory.create({
+    data: {
+      id,
+      projectId: input.projectId,
+      outputType: input.outputType,
+      instruction,
+      background,
+      assistantReply,
+      updatesJson,
+      targetsJson,
+    },
+  });
 
   return { id };
 }
 
 export async function listLearningMemories(outputType: string, limit = 8): Promise<LearningMemoryRow[]> {
-  await ensureLearningMemoryTable();
-  return prisma.$queryRaw`
-    SELECT id, projectId, outputType, instruction, background, assistantReply, updatesJson, targetsJson, createdAt
-    FROM LearningMemory
-    WHERE outputType = ${outputType}
-    ORDER BY createdAt DESC
-    LIMIT ${limit}
-  `;
+  return prisma.learningMemory.findMany({
+    where: { outputType },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
 }
 
 export function formatLearningMemoriesForPrompt(memories: LearningMemoryRow[]): string {

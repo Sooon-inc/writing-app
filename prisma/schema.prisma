@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -23,4 +23,18 @@ model Project {
   hpPageThemes  String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model LearningMemory {
+  id             String   @id
+  projectId      String
+  outputType     String
+  instruction    String
+  background     String?
+  assistantReply String?
+  updatesJson    String
+  targetsJson    String?
+  createdAt      DateTime @default(now())
+
+  @@index([outputType, createdAt])
 }

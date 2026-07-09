@@ -2,6 +2,19 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### Database
+
+This app uses Prisma with PostgreSQL.
+
+`DATABASE_URL` must be a PostgreSQL connection URL, for example a Neon/Supabase/Prisma Postgres URL.
+SQLite (`file:./dev.db`) is not supported on Vercel because Vercel Functions do not provide persistent writable filesystem storage.
+
+Required setup before deploying to Vercel:
+
+1. Create a PostgreSQL database.
+2. Set `DATABASE_URL` in Vercel Environment Variables.
+3. Deploy. The build command runs `prisma migrate deploy` automatically.
+
 First, run the development server:
 
 ```bash
