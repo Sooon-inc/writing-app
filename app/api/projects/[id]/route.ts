@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -10,7 +12,7 @@ export async function GET(
   if (!project) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  return NextResponse.json(project);
+  return NextResponse.json(project, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function PUT(
@@ -24,7 +26,7 @@ export async function PUT(
     where: { id },
     data,
   });
-  return NextResponse.json(project);
+  return NextResponse.json(project, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function DELETE(
@@ -33,5 +35,5 @@ export async function DELETE(
 ) {
   const { id } = await params;
   await prisma.project.delete({ where: { id } });
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
 }

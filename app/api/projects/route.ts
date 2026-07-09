@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: Request) {
   const type = new URL(req.url).searchParams.get("type");
   const projects = await prisma.project.findMany({
@@ -14,7 +16,7 @@ export async function GET(req: Request) {
       updatedAt: true,
     },
   });
-  return NextResponse.json(projects);
+  return NextResponse.json(projects, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(req: Request) {
@@ -55,7 +57,7 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json(project, { status: 201 });
+    return NextResponse.json(project, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Failed to create project", error);
 
