@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();

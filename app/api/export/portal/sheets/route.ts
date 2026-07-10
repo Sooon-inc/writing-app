@@ -5,6 +5,8 @@ import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { buildPortalWorkbook } from "@/lib/portalExcelBuilder";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
+export const maxDuration = 300;
+
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("g_access_token")?.value;

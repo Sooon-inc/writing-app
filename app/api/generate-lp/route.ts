@@ -9,6 +9,8 @@ import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 const client = new Anthropic();
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
 
+export const maxDuration = 300;
+
 function getCellText(row: ExcelJS.Row, colIndex: number): string {
   const cell = row.getCell(colIndex);
   const v = cell.value;

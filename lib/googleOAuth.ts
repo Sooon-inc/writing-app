@@ -7,6 +7,10 @@ function trimTrailingSlash(value: string): string {
 }
 
 export function getAppOrigin(req?: NextRequest): string {
+  if (req && req.nextUrl.origin.startsWith("https://")) {
+    return trimTrailingSlash(req.nextUrl.origin);
+  }
+
   const configured =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_ORIGIN ||
@@ -17,6 +21,10 @@ export function getAppOrigin(req?: NextRequest): string {
 }
 
 export function getGoogleRedirectUri(req?: NextRequest): string {
+  if (req && req.nextUrl.origin.startsWith("https://")) {
+    return `${trimTrailingSlash(req.nextUrl.origin)}/api/auth/google/callback`;
+  }
+
   const configured = process.env.GOOGLE_REDIRECT_URI;
   if (configured) return configured.trim();
   return `${getAppOrigin(req)}/api/auth/google/callback`;

@@ -12,6 +12,8 @@ import { reviewAndReviseMeo } from "@/lib/meoQuality";
 import { ensureMeoOutput } from "@/lib/meoOutput";
 import { jsonrepair } from "jsonrepair";
 
+export const maxDuration = 300;
+
 type MeoServiceItem = {
   商品サービス名: string;
   商品カテゴリ: string;

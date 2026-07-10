@@ -16,6 +16,7 @@ import { normalizeMeoOutput } from "@/lib/meoOutput";
 
 const HP_TYPES = ["hp-classic", "hp-strong", "hp-beauty", "hp-recruit"];
 const SHEET_EXPORT_TIMEOUT_MS = 120000;
+const GENERATION_TIMEOUT_MS = 300000;
 const AUTH_CHECK_TIMEOUT_MS = 15000;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -101,6 +102,21 @@ async function fetchWithTimeout(
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function readJsonResponse<T = unknown>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const excerpt = text.replace(/\s+/g, " ").slice(0, 180);
+    throw new Error(`サーバーからJSON以外の応答が返りました（HTTP ${res.status}）。${excerpt}`);
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // サイトマップの任意ページエントリー（固有IDで独立管理）
@@ -328,28 +344,36 @@ export default function ProjectDetailPage() {
   const handleGeneratePortal = async () => {
     setPortalGenerating(true);
     setPortalGenError("");
-    const res = await fetch("/api/generate-portal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: id,
-        hpUrl: hpUrl.trim(),
-        gbpUrl: portalGbpUrl.trim(),
-        sns: {
-          instagram: portalInstagram.trim(),
-          x: portalX.trim(),
-          line: portalLine.trim(),
-          youtube: portalYoutube.trim(),
-        },
-        hearing,
-        industries: JSON.stringify(industries.filter((industry) => industry.trim())),
-      }),
-    });
-    const data = await res.json();
-    setPortalGenerating(false);
-    if (!res.ok) { setPortalGenError(data.error ?? "生成に失敗しました"); return; }
-    setOutput(data.output);
-    setProject((prev) => prev ? { ...prev, output: JSON.stringify(data.output) } : prev);
+    try {
+      const res = await fetchWithTimeout("/api/generate-portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: id,
+          hpUrl: hpUrl.trim(),
+          gbpUrl: portalGbpUrl.trim(),
+          sns: {
+            instagram: portalInstagram.trim(),
+            x: portalX.trim(),
+            line: portalLine.trim(),
+            youtube: portalYoutube.trim(),
+          },
+          hearing,
+          industries: JSON.stringify(industries.filter((industry) => industry.trim())),
+        }),
+      }, GENERATION_TIMEOUT_MS);
+      const data = await readJsonResponse<{ output?: Record<string, unknown>; error?: string }>(res);
+      if (!res.ok || !data.output) {
+        setPortalGenError(data.error ?? "生成に失敗しました");
+        return;
+      }
+      setOutput(data.output);
+      setProject((prev) => prev ? { ...prev, output: JSON.stringify(data.output) } : prev);
+    } catch (error) {
+      setPortalGenError(getErrorMessage(error));
+    } finally {
+      setPortalGenerating(false);
+    }
   };
 
   const handleDownloadPortal = async () => {
@@ -399,32 +423,37 @@ export default function ProjectDetailPage() {
   const handleGenerate = async () => {
     setGenerating(true);
     setGenError("");
-    const filledProducts = products.filter((p) => p.trim());
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), products: JSON.stringify(filledProducts) }),
-    });
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, industries: industries.filter((industry) => industry.trim()), products: filledProducts, gbpContent, gbpUrl: gbpUrl.trim() }),
-    });
-    const data = await res.json();
-    setGenerating(false);
-    if (!res.ok) { setGenError(data.error ?? "生成に失敗しました"); return; }
-    const normalizedOutput = project?.type === "meo" ? normalizeMeoOutput(data.output) : data.output;
-    if (!normalizedOutput || !isPlainObject(normalizedOutput)) {
-      setGenError("生成結果の形式が不正です。再生成してください。");
-      return;
+    try {
+      const filledProducts = products.filter((p) => p.trim());
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), products: JSON.stringify(filledProducts) }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+      const res = await fetchWithTimeout("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, industries: industries.filter((industry) => industry.trim()), products: filledProducts, gbpContent, gbpUrl: gbpUrl.trim() }),
+      }, GENERATION_TIMEOUT_MS);
+      const data = await readJsonResponse<{ output?: unknown; error?: string }>(res);
+      if (!res.ok) { setGenError(data.error ?? "生成に失敗しました"); return; }
+      const normalizedOutput = project?.type === "meo" ? normalizeMeoOutput(data.output) : data.output;
+      if (!normalizedOutput || !isPlainObject(normalizedOutput)) {
+        setGenError("生成結果の形式が不正です。再生成してください。");
+        return;
+      }
+      const outputJson = JSON.stringify(normalizedOutput);
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output: outputJson }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+      setOutput(normalizedOutput);
+    } catch (error) {
+      setGenError(getErrorMessage(error));
+    } finally {
+      setGenerating(false);
     }
-    const outputJson = JSON.stringify(normalizedOutput);
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ output: outputJson }),
-    });
-    setOutput(normalizedOutput);
   };
 
   const handleGenerateHpPages = async () => {
@@ -459,46 +488,50 @@ export default function ProjectDetailPage() {
 
     setGeneratingHp(true);
     setHpGenError("");
-
-    // Save themes before generating
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
-    });
-
-    const allOutputs: Record<string, Record<number, string>> = {};
-    for (const item of allItems) {
-      setGeneratingSheet(item.label);
-      const res = await fetch("/api/generate-hp-pages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: id,
-          sheetName: item.sheetName,
-          instanceKey: item.instanceKey,
-          theme: item.theme,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setHpGenError(data.error ?? "生成に失敗しました");
-        setGeneratingHp(false);
-        setGeneratingSheet("");
-        return;
-      }
-      Object.assign(allOutputs, data.hpPageOutputs);
-    }
-
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
-    });
-
-    setHpPageOutputs(allOutputs);
-    setGeneratingHp(false);
     setGeneratingSheet("");
+
+    try {
+      // Save themes before generating
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+
+      const allOutputs: Record<string, Record<number, string>> = {};
+      for (const item of allItems) {
+        setGeneratingSheet(item.label);
+        const res = await fetchWithTimeout("/api/generate-hp-pages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: id,
+            sheetName: item.sheetName,
+            instanceKey: item.instanceKey,
+            theme: item.theme,
+          }),
+        }, GENERATION_TIMEOUT_MS);
+        const data = await readJsonResponse<{ hpPageOutputs?: Record<string, Record<number, string>>; error?: string }>(res);
+        if (!res.ok || !data.hpPageOutputs) {
+          setHpGenError(data.error ?? "生成に失敗しました");
+          return;
+        }
+        Object.assign(allOutputs, data.hpPageOutputs);
+      }
+
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+
+      setHpPageOutputs(allOutputs);
+    } catch (error) {
+      setHpGenError(getErrorMessage(error));
+    } finally {
+      setGeneratingHp(false);
+      setGeneratingSheet("");
+    }
   };
 
   const handleGenerateOptionalPages = async () => {
@@ -521,46 +554,50 @@ export default function ProjectDetailPage() {
 
     setGeneratingHp(true);
     setHpGenError("");
-
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
-    });
-
-    // 既存の出力を引き継ぎ、追加ページの出力のみ上書き
-    const allOutputs: Record<string, Record<number, string>> = { ...(hpPageOutputs ?? {}) };
-    for (const item of optionalItems) {
-      setGeneratingSheet(item.label);
-      const res = await fetch("/api/generate-hp-pages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: id,
-          sheetName: item.sheetName,
-          instanceKey: item.instanceKey,
-          theme: item.theme,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setHpGenError(data.error ?? "生成に失敗しました");
-        setGeneratingHp(false);
-        setGeneratingSheet("");
-        return;
-      }
-      Object.assign(allOutputs, data.hpPageOutputs);
-    }
-
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
-    });
-
-    setHpPageOutputs(allOutputs);
-    setGeneratingHp(false);
     setGeneratingSheet("");
+
+    try {
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+
+      // 既存の出力を引き継ぎ、追加ページの出力のみ上書き
+      const allOutputs: Record<string, Record<number, string>> = { ...(hpPageOutputs ?? {}) };
+      for (const item of optionalItems) {
+        setGeneratingSheet(item.label);
+        const res = await fetchWithTimeout("/api/generate-hp-pages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: id,
+            sheetName: item.sheetName,
+            instanceKey: item.instanceKey,
+            theme: item.theme,
+          }),
+        }, GENERATION_TIMEOUT_MS);
+        const data = await readJsonResponse<{ hpPageOutputs?: Record<string, Record<number, string>>; error?: string }>(res);
+        if (!res.ok || !data.hpPageOutputs) {
+          setHpGenError(data.error ?? "生成に失敗しました");
+          return;
+        }
+        Object.assign(allOutputs, data.hpPageOutputs);
+      }
+
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+
+      setHpPageOutputs(allOutputs);
+    } catch (error) {
+      setHpGenError(getErrorMessage(error));
+    } finally {
+      setGeneratingHp(false);
+      setGeneratingSheet("");
+    }
   };
 
   const handleDownloadHp = async () => {
@@ -867,20 +904,25 @@ export default function ProjectDetailPage() {
   const handleGenerateLp = async () => {
     setGeneratingLp(true);
     setLpGenError("");
-    await fetch(`/api/projects/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim() }),
-    });
-    const res = await fetch("/api/generate-lp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: id, theme: lpTheme }),
-    });
-    const data = await res.json();
-    setGeneratingLp(false);
-    if (!res.ok) { setLpGenError(data.error ?? "生成に失敗しました"); return; }
-    setLpOutput(data.lpOutput);
+    try {
+      await fetchWithTimeout(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim() }),
+      }, AUTH_CHECK_TIMEOUT_MS);
+      const res = await fetchWithTimeout("/api/generate-lp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id, theme: lpTheme }),
+      }, GENERATION_TIMEOUT_MS);
+      const data = await readJsonResponse<{ lpOutput?: Record<number, string>; error?: string }>(res);
+      if (!res.ok || !data.lpOutput) { setLpGenError(data.error ?? "生成に失敗しました"); return; }
+      setLpOutput(data.lpOutput);
+    } catch (error) {
+      setLpGenError(getErrorMessage(error));
+    } finally {
+      setGeneratingLp(false);
+    }
   };
 
   const handleDownloadLp = async () => {
