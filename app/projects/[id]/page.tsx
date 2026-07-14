@@ -623,14 +623,22 @@ export default function ProjectDetailPage() {
   };
 
   const handleChatApply = async (updates: UpdatePayload) => {
-    if (updates.kind === "output") {
-      const next = applyOutputDiff(output ?? {}, updates.diff);
-      setOutput(next);
-      await fetch(`/api/projects/${id}`, {
+    const saveProjectPatch = async (payload: Record<string, string>) => {
+      const res = await fetch(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ output: JSON.stringify(next) }),
+        body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error ?? "修正内容の保存に失敗しました");
+      }
+    };
+
+    if (updates.kind === "output") {
+      const next = applyOutputDiff(output ?? {}, updates.diff);
+      await saveProjectPatch({ output: JSON.stringify(next) });
+      setOutput(next);
     } else if (updates.kind === "hp") {
       const next = { ...(hpPageOutputs ?? {}) };
       for (const [key, rows] of Object.entries(updates.diff)) {
@@ -641,12 +649,8 @@ export default function ProjectDetailPage() {
           ),
         };
       }
+      await saveProjectPatch({ hpPageOutputs: JSON.stringify(next) });
       setHpPageOutputs(next);
-      await fetch(`/api/projects/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hpPageOutputs: JSON.stringify(next) }),
-      });
     } else if (updates.kind === "lp") {
       const next = {
         ...(lpOutput ?? {}),
@@ -659,11 +663,8 @@ export default function ProjectDetailPage() {
         try { return JSON.parse(project?.hpPageOutputs ?? "{}") as Record<string, unknown>; }
         catch { return {}; }
       })();
-      await fetch(`/api/projects/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hpPageOutputs: JSON.stringify({ ...existingHpOut, LP: next }) }),
-      });
+      await saveProjectPatch({ hpPageOutputs: JSON.stringify({ ...existingHpOut, LP: next }) });
+      setLpOutput(next);
     }
   };
 
