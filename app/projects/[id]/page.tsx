@@ -143,6 +143,21 @@ interface Project {
   hpPageThemes: string | null;
 }
 
+type HpFieldDef = {
+  rn: number;
+  section: string;
+  label: string;
+  condition?: string;
+  group?: string;
+};
+
+type LpFieldDef = {
+  rn: number;
+  section: string;
+  label: string;
+  condition?: string;
+};
+
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -726,8 +741,160 @@ export default function ProjectDetailPage() {
 
   const clearSelectedTargets = () => setSelectedTargets([]);
 
+  const compactHpGroupAfterDelete = async (target: SelectedTarget): Promise<boolean> => {
+    if (!project || !target.instanceKey || typeof target.rn !== "number" || !target.sheetName || !target.group) {
+      return false;
+    }
+
+    const currentRows = hpPageOutputs?.[target.instanceKey];
+    if (!currentRows) return false;
+
+    const res = await fetch(`/api/hp-fields?type=${encodeURIComponent(project.type)}&sheetName=${encodeURIComponent(target.sheetName)}`);
+    const data = await res.json().catch(() => ({})) as { fields?: HpFieldDef[] };
+    if (!res.ok || !Array.isArray(data.fields)) return false;
+
+    const sectionFields = data.fields.filter((field) =>
+      field.section === target.section &&
+      field.group &&
+      field.group.trim()
+    );
+    if (sectionFields.length === 0) return false;
+
+    const groupNames = Array.from(new Set(sectionFields.map((field) => field.group).filter(Boolean))) as string[];
+    const targetGroupIndex = groupNames.indexOf(target.group);
+    if (targetGroupIndex < 0) return false;
+
+    const fieldsByGroup = new Map<string, HpFieldDef[]>();
+    for (const groupName of groupNames) {
+      fieldsByGroup.set(groupName, sectionFields.filter((field) => field.group === groupName));
+    }
+
+    const getValue = (rn: number) => {
+      const rows = currentRows as Record<string | number, string>;
+      return rows[rn] ?? rows[String(rn)] ?? "";
+    };
+
+    const diff: Record<string, string> = {};
+    for (let groupIndex = targetGroupIndex; groupIndex < groupNames.length; groupIndex += 1) {
+      const currentGroupFields = fieldsByGroup.get(groupNames[groupIndex]) ?? [];
+      const nextGroupFields = fieldsByGroup.get(groupNames[groupIndex + 1] ?? "") ?? [];
+
+      for (const currentField of currentGroupFields) {
+        const nextField = nextGroupFields.find((field) => field.label === currentField.label);
+        diff[String(currentField.rn)] = nextField ? String(getValue(nextField.rn) ?? "") : "";
+      }
+    }
+
+    await handleChatApply({
+      kind: "hp",
+      diff: { [target.instanceKey]: diff },
+    });
+    return true;
+  };
+
+  const compactLpRowsAfterDelete = async (target: SelectedTarget): Promise<boolean> => {
+    if (target.instanceKey !== "LP" || typeof target.rn !== "number" || !lpOutput || lpFieldDefs.length === 0) {
+      return false;
+    }
+
+    const sameSectionFields = lpFieldDefs.filter((field) => field.section === target.section);
+    if (sameSectionFields.length === 0) return false;
+
+    const numberedMatch = target.label.match(/^(\d+)[.．]\s*(.+)$/);
+    const diff: Record<string, string> = {};
+
+    if (numberedMatch) {
+      const targetNumber = Number(numberedMatch[1]);
+      const numberedFields = sameSectionFields
+        .map((field) => {
+          const match = field.label.match(/^(\d+)[.．]\s*(.+)$/);
+          if (!match) return null;
+          return { ...field, itemNumber: Number(match[1]), suffix: match[2].trim() };
+        })
+        .filter((field): field is LpFieldDef & { itemNumber: number; suffix: string } => !!field)
+        .sort((a, b) => a.itemNumber - b.itemNumber || a.rn - b.rn);
+
+      const itemNumbers = Array.from(new Set(numberedFields.map((field) => field.itemNumber)));
+      const targetIndex = itemNumbers.indexOf(targetNumber);
+      if (targetIndex < 0) return false;
+
+      const fieldsByNumber = new Map<number, Array<LpFieldDef & { itemNumber: number; suffix: string }>>();
+      for (const itemNumber of itemNumbers) {
+        fieldsByNumber.set(itemNumber, numberedFields.filter((field) => field.itemNumber === itemNumber));
+      }
+
+      for (let index = targetIndex; index < itemNumbers.length; index += 1) {
+        const currentFields = fieldsByNumber.get(itemNumbers[index]) ?? [];
+        const nextFields = fieldsByNumber.get(itemNumbers[index + 1]) ?? [];
+        for (const currentField of currentFields) {
+          const nextField = nextFields.find((field) => field.suffix === currentField.suffix);
+          diff[String(currentField.rn)] = nextField ? String(lpOutput[nextField.rn] ?? "") : "";
+        }
+      }
+    } else {
+      const sameLabelFields = sameSectionFields
+        .filter((field) => field.label === target.label)
+        .sort((a, b) => a.rn - b.rn);
+      const targetIndex = sameLabelFields.findIndex((field) => field.rn === target.rn);
+      if (targetIndex < 0 || sameLabelFields.length <= 1) return false;
+
+      for (let index = targetIndex; index < sameLabelFields.length; index += 1) {
+        const currentField = sameLabelFields[index];
+        const nextField = sameLabelFields[index + 1];
+        diff[String(currentField.rn)] = nextField ? String(lpOutput[nextField.rn] ?? "") : "";
+      }
+    }
+
+    await handleChatApply({
+      kind: "lp",
+      diff,
+    });
+    return true;
+  };
+
+  const compactPortalFieldsAfterDelete = async (target: SelectedTarget): Promise<boolean> => {
+    if (!isPortalType || !target.fieldKey || !output) return false;
+
+    const configs = [
+      { prefix: "会社紹介", numbers: ["❹", "❺", "❻"], suffixes: ["中見出し", "本文"] },
+      { prefix: "詳細紹介", numbers: ["❹", "❺", "❻"], suffixes: ["中見出し", "本文"] },
+      { prefix: "施工事例", numbers: ["①", "②", "③"], suffixes: ["タグ", "価格", "工期", "所在地"] },
+      { prefix: "お約束", numbers: ["①", "②", "③"], suffixes: ["見出し", "本文"] },
+      { prefix: "インタビュー", numbers: ["①", "②", "③", "④", "⑤"], suffixes: ["質問", "回答"] },
+    ];
+
+    for (const config of configs) {
+      const matchedNumber = config.numbers.find((number) => target.fieldKey === `${config.prefix}${number}${config.suffixes.find((suffix) => target.fieldKey === `${config.prefix}${number}${suffix}`) ?? ""}`);
+      const matchedSuffix = config.suffixes.find((suffix) =>
+        config.numbers.some((number) => target.fieldKey === `${config.prefix}${number}${suffix}`)
+      );
+      if (!matchedNumber || !matchedSuffix) continue;
+
+      const targetIndex = config.numbers.indexOf(matchedNumber);
+      const diff: Record<string, unknown> = {};
+      for (let index = targetIndex; index < config.numbers.length; index += 1) {
+        const currentNumber = config.numbers[index];
+        const nextNumber = config.numbers[index + 1];
+        for (const suffix of config.suffixes) {
+          const currentKey = `${config.prefix}${currentNumber}${suffix}`;
+          const nextKey = nextNumber ? `${config.prefix}${nextNumber}${suffix}` : "";
+          diff[currentKey] = nextKey ? (output[nextKey] ?? "") : "";
+        }
+      }
+
+      await handleChatApply({ kind: "output", diff });
+      return true;
+    }
+
+    return false;
+  };
+
   const handleDeleteTarget = async (target: SelectedTarget) => {
     if (target.fieldKey) {
+      if (await compactPortalFieldsAfterDelete(target)) {
+        setSelectedTargets((prev) => prev.filter((item) => item.id !== target.id));
+        return;
+      }
       const emptyValue =
         target.valueType === "boolean" ? false :
         target.valueType === "array" ? [] :
@@ -738,11 +905,19 @@ export default function ProjectDetailPage() {
         diff: { [target.fieldKey]: emptyValue },
       });
     } else if (target.instanceKey === "LP" && typeof target.rn === "number") {
+      if (await compactLpRowsAfterDelete(target)) {
+        setSelectedTargets((prev) => prev.filter((item) => item.id !== target.id));
+        return;
+      }
       await handleChatApply({
         kind: "lp",
         diff: { [target.rn]: "" },
       });
     } else if (target.instanceKey && typeof target.rn === "number") {
+      if (await compactHpGroupAfterDelete(target)) {
+        setSelectedTargets((prev) => prev.filter((item) => item.id !== target.id));
+        return;
+      }
       await handleChatApply({
         kind: "hp",
         diff: { [target.instanceKey]: { [target.rn]: "" } },
@@ -896,7 +1071,7 @@ export default function ProjectDetailPage() {
   const [lpOutput, setLpOutput] = useState<Record<number, string> | null>(null);
   const [generatingLp, setGeneratingLp] = useState(false);
   const [lpGenError, setLpGenError] = useState("");
-  const [lpFieldDefs, setLpFieldDefs] = useState<{ rn: number; section: string; label: string; condition?: string }[]>([]);
+  const [lpFieldDefs, setLpFieldDefs] = useState<LpFieldDef[]>([]);
   const [selectedTargets, setSelectedTargets] = useState<SelectedTarget[]>([]);
 
   useEffect(() => {

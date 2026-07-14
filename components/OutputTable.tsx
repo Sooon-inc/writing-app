@@ -2,10 +2,12 @@ export interface SelectedTarget {
   id: string;
   instanceKey?: string;  // HP: page key / LP: "LP"
   pageLabel?: string;
+  sheetName?: string;
   fieldKey?: string;     // Portal: output key
   rn?: number;
   section: string;
   label: string;
+  group?: string;
   currentValue: string;
   displayText: string;  // e.g. "サービス（A型） › [FVエリア] キャッチコピー"
   valueType?: "text" | "boolean" | "array" | "object";
@@ -23,9 +25,9 @@ interface Props {
   fields: Field[];
   output: Record<string, string>;
   selectedRns?: number[];
-  onToggleRow?: (rn: number, section: string, label: string, value: string) => void;
-  onDeleteRow?: (rn: number, section: string, label: string, value: string) => void;
-  onEditRow?: (rn: number, section: string, label: string, value: string) => void;
+  onToggleRow?: (rn: number, section: string, label: string, value: string, group?: string) => void;
+  onDeleteRow?: (rn: number, section: string, label: string, value: string, group?: string) => void;
+  onEditRow?: (rn: number, section: string, label: string, value: string, group?: string) => void;
 }
 
 type SectionRow = { rn: number; label: string; condition?: string; value: string; section: string; group: string };
@@ -98,7 +100,7 @@ export default function OutputTable({ fields, output, selectedRns = [], onToggle
                     onMouseDown={(e) => {
                       if (!onToggleRow) return;
                       e.preventDefault();
-                      onToggleRow(rn, rowSection, label, value);
+                      onToggleRow(rn, rowSection, label, value, groupName);
                     }}
                     className={`${onToggleRow ? "cursor-pointer" : ""} ${isSelected ? "ring-1 ring-inset ring-blue-400 bg-blue-50/50" : onToggleRow ? "hover:bg-blue-50/40" : ""}`}
                   >
@@ -111,7 +113,7 @@ export default function OutputTable({ fields, output, selectedRns = [], onToggle
                           onMouseDown={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            onToggleRow(rn, rowSection, label, value);
+                            onToggleRow(rn, rowSection, label, value, groupName);
                           }}
                           className="h-4 w-4 rounded border-gray-300 text-blue-600"
                           aria-label={`行${rn}を修正対象に選択`}
@@ -140,7 +142,7 @@ export default function OutputTable({ fields, output, selectedRns = [], onToggle
                           onClick={(event) => event.stopPropagation()}
                           onBlur={(event) => {
                             const next = event.currentTarget.value;
-                            if (next !== value) onEditRow(rn, rowSection, label, next);
+                            if (next !== value) onEditRow(rn, rowSection, label, next, groupName);
                           }}
                           className="min-h-[2.5rem] w-full resize-y rounded-md border border-transparent bg-transparent px-1.5 py-1 leading-relaxed text-gray-800 outline-none hover:border-green-200 focus:border-sky-300 focus:bg-white focus:ring-2 focus:ring-sky-100"
                           aria-label={`行${rn} ${label}を直接編集`}
@@ -156,7 +158,7 @@ export default function OutputTable({ fields, output, selectedRns = [], onToggle
                           onMouseDown={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
-                            onDeleteRow(rn, rowSection, label, value);
+                            onDeleteRow(rn, rowSection, label, value, groupName);
                           }}
                           className="rounded border border-red-200 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50"
                         >

@@ -37,27 +37,29 @@ export default function HpPageCard({ instanceKey, label, theme, rows, projectTyp
     .filter((target) => target.instanceKey === instanceKey && typeof target.rn === "number")
     .map((target) => target.rn as number);
 
-  const makeTarget = (rn: number, section: string, fieldLabel: string, value: string): SelectedTarget => ({
+  const makeTarget = (rn: number, section: string, fieldLabel: string, value: string, group?: string): SelectedTarget => ({
     id: `hp:${instanceKey}:${rn}`,
     instanceKey,
     pageLabel: label,
+    sheetName,
     rn,
     section,
     label: fieldLabel,
+    group,
     currentValue: value,
-    displayText: `${label} › [${section}] ${fieldLabel}`,
+    displayText: `${label} › [${section}] ${group ? `${group} / ` : ""}${fieldLabel}`,
   });
 
-  const handleToggleRow = (rn: number, section: string, fieldLabel: string, value: string) => {
-    onToggleField?.(makeTarget(rn, section, fieldLabel, value));
+  const handleToggleRow = (rn: number, section: string, fieldLabel: string, value: string, group?: string) => {
+    onToggleField?.(makeTarget(rn, section, fieldLabel, value, group));
   };
 
-  const handleDeleteRow = (rn: number, section: string, fieldLabel: string, value: string) => {
-    onDeleteField?.(makeTarget(rn, section, fieldLabel, value));
+  const handleDeleteRow = (rn: number, section: string, fieldLabel: string, value: string, group?: string) => {
+    onDeleteField?.(makeTarget(rn, section, fieldLabel, value, group));
   };
 
-  const handleEditRow = (rn: number, section: string, fieldLabel: string, value: string) => {
-    onEditField?.(makeTarget(rn, section, fieldLabel, value), value);
+  const handleEditRow = (rn: number, section: string, fieldLabel: string, value: string, group?: string) => {
+    onEditField?.(makeTarget(rn, section, fieldLabel, value, group), value);
   };
 
   return (
