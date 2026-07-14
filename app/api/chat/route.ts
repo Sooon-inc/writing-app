@@ -5,6 +5,7 @@ import path from "path";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { formatLearningMemoriesForPrompt, listLearningMemories } from "@/lib/learningMemory";
+import { jsonrepair } from "jsonrepair";
 
 const client = new Anthropic();
 
@@ -184,6 +185,44 @@ function buildUpdatePayload(diff: Record<string, unknown>, outputType: string): 
   return { kind: "output", diff };
 }
 
+function extractUpdateJsonBlock(text: string): { reply: string; diff: Record<string, unknown> | null } {
+  const blockPattern = /```(?:json\s*:?\s*update|json-update|update|json)?\s*\n([\s\S]*?)\n```/gi;
+  let match: RegExpExecArray | null;
+  let selectedBlock = "";
+  let reply = text;
+
+  while ((match = blockPattern.exec(text)) !== null) {
+    const block = match[1]?.trim() ?? "";
+    const marker = match[0].slice(0, 40).toLowerCase();
+    const looksLikeUpdate =
+      marker.includes("update") ||
+      block.includes("{") ||
+      block.includes("}");
+    if (!looksLikeUpdate) continue;
+
+    selectedBlock = block;
+    reply = reply.replace(match[0], "").trim();
+  }
+
+  if (!selectedBlock) return { reply: text.trim(), diff: null };
+
+  try {
+    const jsonStart = selectedBlock.indexOf("{");
+    const jsonEnd = selectedBlock.lastIndexOf("}");
+    const jsonText = jsonStart >= 0 && jsonEnd > jsonStart
+      ? selectedBlock.slice(jsonStart, jsonEnd + 1)
+      : selectedBlock;
+    const parsed = JSON.parse(jsonrepair(jsonText)) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { reply, diff: parsed as Record<string, unknown> };
+    }
+  } catch {
+    // 差分抽出に失敗した場合は修正案なしとして扱う
+  }
+
+  return { reply, diff: null };
+}
+
 function formatUnknownForPrompt(value: unknown, indent = 0): string {
   const pad = "  ".repeat(indent);
   if (value == null) return "";
@@ -306,15 +345,11 @@ ${learningContext ? `\n【過去にユーザーが学習させた修正例】\n$
   });
 
   const text = (msg.content[0] as { type: string; text: string }).text;
-  const reply = text.replace(/```json:update[\s\S]*?```/g, "").trim();
-
-  const updateMatch = text.match(/```json:update\n([\s\S]*?)\n```/);
+  const extracted = extractUpdateJsonBlock(text);
+  const reply = extracted.reply;
   let updates: UpdatePayload | null = null;
-  if (updateMatch) {
-    try {
-      const diff = JSON.parse(updateMatch[1]) as Record<string, unknown>;
-      updates = buildUpdatePayload(diff, currentOutput.type);
-    } catch { /* ignore */ }
+  if (extracted.diff) {
+    updates = buildUpdatePayload(extracted.diff, currentOutput.type);
   }
 
   return NextResponse.json({ reply, updates });

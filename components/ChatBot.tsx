@@ -20,6 +20,7 @@ interface Message {
   content: string;
   updates?: UpdatePayload | null;
   applied?: boolean;
+  applyError?: string;
   instruction?: string;
   targets?: SelectedTarget[];
   learned?: boolean;
@@ -102,16 +103,36 @@ export default function ChatBot({
         }),
       });
       const data = await res.json() as { reply: string; updates?: UpdatePayload | null };
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: data.reply,
-          updates: data.updates ?? null,
-          instruction: trimmed,
-          targets: targetSnapshot,
-        },
-      ]);
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: data.reply,
+        updates: data.updates ?? null,
+        instruction: trimmed,
+        targets: targetSnapshot,
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      if (data.updates) {
+        const targetIndex = messages.length + 1;
+        setApplying(targetIndex);
+        try {
+          await onApply(data.updates);
+          setMessages((prev) =>
+            prev.map((m, i) => (i === targetIndex ? { ...m, applied: true, applyError: "" } : m))
+          );
+          onClearTargets?.();
+        } catch (error) {
+          setMessages((prev) =>
+            prev.map((m, i) =>
+              i === targetIndex
+                ? { ...m, applyError: error instanceof Error ? error.message : "修正の反映に失敗しました" }
+                : m
+            )
+          );
+        } finally {
+          setApplying(null);
+        }
+      }
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -391,13 +412,23 @@ export default function ChatBot({
                           )}
                         </div>
                       ) : (
-                        <button
-                          onClick={() => handleApply(i, msg.updates!)}
-                          disabled={applying === i}
-                          className="w-full text-xs font-medium bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-300 text-white py-1.5 rounded-lg transition-colors"
-                        >
-                          {applying === i ? "適用中..." : "この変更を適用する"}
-                        </button>
+                        <div className="space-y-1.5">
+                          <p className="text-xs text-yellow-700 font-medium">
+                            {applying === i ? "修正を反映中..." : "修正を自動反映します"}
+                          </p>
+                          {msg.applyError && (
+                            <>
+                              <p className="text-[11px] text-red-500">{msg.applyError}</p>
+                              <button
+                                onClick={() => handleApply(i, msg.updates!)}
+                                disabled={applying === i}
+                                className="w-full text-xs font-medium bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-300 text-white py-1.5 rounded-lg transition-colors"
+                              >
+                                {applying === i ? "適用中..." : "手動で再適用する"}
+                              </button>
+                            </>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
