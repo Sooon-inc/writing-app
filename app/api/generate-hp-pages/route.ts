@@ -195,6 +195,7 @@ export async function POST(req: NextRequest) {
   );
   const checked = await reviewAndReviseMarketingJson(content, {
     contentType: `HP:${sheetName}`,
+    maxRevisionAttempts: 0,
   });
   const hpPageOutputs: Record<string, Record<number, string>> = {
     [instanceKey]: checked.output,
