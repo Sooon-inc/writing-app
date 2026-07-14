@@ -1,4 +1,8 @@
 import * as ExcelJS from "exceljs";
+import {
+  hasBeautyTopSection04ExtraRows,
+  prepareBeautyTopSection04ExtraRows,
+} from "@/lib/hpExtraRows";
 
 export interface HpSitemapItem {
   id: string;
@@ -67,7 +71,11 @@ function writeContent(
   rowContents: Record<string, string>,
   colIndex: number
 ): void {
-  for (const [rowNumStr, value] of Object.entries(rowContents)) {
+  const contents = sheet.name.trim() === "トップ" && hasBeautyTopSection04ExtraRows(rowContents)
+    ? prepareBeautyTopSection04ExtraRows(sheet, rowContents)
+    : rowContents;
+
+  for (const [rowNumStr, value] of Object.entries(contents)) {
     if (!value) continue;
     const rowNum = parseInt(rowNumStr);
     const row = sheet.getRow(rowNum);

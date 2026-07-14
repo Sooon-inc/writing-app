@@ -37,7 +37,8 @@ export default function OutputTable({ fields, output, selectedRns = [], onToggle
 
   for (const field of fields) {
     const value = output[field.rn] ?? output[String(field.rn)] ?? "";
-    if (!value) continue;
+    const isAppendableVirtualRow = field.rn >= 10000;
+    if (!value && !isAppendableVirtualRow) continue;
     const row: SectionRow = {
       rn: field.rn,
       label: field.label,

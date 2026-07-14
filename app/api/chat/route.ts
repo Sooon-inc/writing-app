@@ -6,6 +6,11 @@ import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { formatLearningMemoriesForPrompt, listLearningMemories } from "@/lib/learningMemory";
 import { jsonrepair } from "jsonrepair";
+import {
+  BEAUTY_TOP_SECTION04_EXTRA_FIELDS,
+  beautyTopSection04ExtraPrompt,
+  isBeautyTopSheet,
+} from "@/lib/hpExtraRows";
 
 const client = new Anthropic();
 
@@ -134,7 +139,14 @@ async function formatOutputForPrompt(
           const sheet =
             wb.getWorksheet(sheetName) ??
             wb.worksheets.find((s) => s.name.trim() === sheetName.trim());
-          if (sheet) fieldMaps[sheetName] = extractHpFieldMap(sheet);
+          if (sheet) {
+            fieldMaps[sheetName] = extractHpFieldMap(sheet);
+            if (isBeautyTopSheet(project.type, sheetName)) {
+              for (const field of BEAUTY_TOP_SECTION04_EXTRA_FIELDS) {
+                fieldMaps[sheetName].set(field.rn, { section: field.section, label: `${field.group} ${field.label}` });
+              }
+            }
+          }
         }
       }
     } catch { /* fallback to row numbers */ }
@@ -266,6 +278,9 @@ export async function POST(req: NextRequest) {
   };
 
   const formattedOutput = await formatOutputForPrompt(currentOutput, projectId);
+  const project = currentOutput.type === "hp"
+    ? await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
+    : null;
   const learningMemories = await listLearningMemories(currentOutput.type, 8);
   const learningContext = formatLearningMemoriesForPrompt(learningMemories);
 
@@ -316,9 +331,17 @@ export async function POST(req: NextRequest) {
       })()
     : "";
 
+  const hpAppendInstruction = currentOutput.type === "hp" && project?.type === "hp-beauty"
+    ? (() => {
+        const topKey = Object.keys(currentOutput.data).find((key) => key === "トップ") ?? "トップ";
+        return `\n${beautyTopSection04ExtraPrompt(topKey)}\n`;
+      })()
+    : "";
+
   const systemPrompt = `あなたは日本語のライティング修正アシスタントです。
 以下の生成済み${outputTypeLabel}コンテンツを参照し、ユーザーの修正依頼に日本語で丁寧に答えてください。
 ${targetInstruction}
+${hpAppendInstruction}
 【現在のコンテンツ】
 ${currentOutput.type === "meo" ? formatUnknownForPrompt(currentOutput.data) : formattedOutput}
 ${learningContext ? `\n【過去にユーザーが学習させた修正例】\n${learningContext}\n\n【学習例の使い方】\n- 学習例は、文体・言い換え方・削除/追加の判断基準として参考にすること\n- ただし、今回の修正対象・業種・文脈と矛盾する内容はそのまま流用しないこと\n- 固有名詞・数字・住所・サービス名は現在のコンテンツとユーザー指示を優先すること` : ""}
