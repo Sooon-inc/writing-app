@@ -14,6 +14,32 @@ function sanitizeSheetName(name: string): string {
   return name.replace(/[\\/?*[\]:]/g, "_").slice(0, 31).trim() || "ページ";
 }
 
+/**
+ * ワークシート複製用にセル値をコピーする。
+ *
+ * Excel の共有数式（sharedFormula）をそのまま別シートへコピーすると、
+ * コピー先には共有数式の親セルが存在しない状態になることがある。
+ * Google スプレッドシートへの変換時に
+ * "Shared Formula master must exist above and or left of clone" となるため、
+ * 数式は各セルごとの通常数式として書き出す。
+ */
+function cloneCellValue(sourceCell: ExcelJS.Cell): ExcelJS.CellValue {
+  if (sourceCell.type === ExcelJS.ValueType.Formula) {
+    const formula = sourceCell.formula;
+    if (formula) {
+      return {
+        formula,
+        // キャッシュ値も残し、Excel / Google Sheets が再計算するまでの表示を保つ。
+        result: sourceCell.result,
+      } as ExcelJS.CellFormulaValue;
+    }
+
+    return sourceCell.result ?? null;
+  }
+
+  return sourceCell.value;
+}
+
 /** ワークシートを複製して新しい名前で追加 */
 function cloneWorksheet(
   wb: ExcelJS.Workbook,
@@ -52,7 +78,7 @@ function cloneWorksheet(
       if (srcCell.isMerged && srcCell.master && srcCell.master.address !== srcCell.address) return;
 
       const dstCell = dstRow.getCell(srcCell.col);
-      dstCell.value = srcCell.value;
+      dstCell.value = cloneCellValue(srcCell);
       if (srcCell.font) dstCell.font = { ...srcCell.font };
       if (srcCell.fill) dstCell.fill = JSON.parse(JSON.stringify(srcCell.fill)) as ExcelJS.Fill;
       if (srcCell.border) dstCell.border = JSON.parse(JSON.stringify(srcCell.border));
