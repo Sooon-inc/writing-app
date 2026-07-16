@@ -25,7 +25,14 @@ function sanitizeSheetName(name: string): string {
  */
 function cloneCellValue(sourceCell: ExcelJS.Cell): ExcelJS.CellValue {
   if (sourceCell.type === ExcelJS.ValueType.Formula) {
-    const formula = sourceCell.formula;
+    let formula: string | undefined;
+    try {
+      formula = sourceCell.formula;
+    } catch {
+      // 共有数式の親セルが欠けたセルは式を展開できない。
+      // 補助用の計算セルなので、キャッシュ値を引き継いで出力を継続する。
+      return sourceCell.result ?? null;
+    }
     if (formula) {
       return {
         formula,
@@ -60,9 +67,17 @@ function normalizeWorkbookFormulas(wb: ExcelJS.Workbook): void {
         if (cell.type !== ExcelJS.ValueType.Formula) return;
         // 先に全セルの式を取得する。共有数式の親を上書きした後では、
         // クローン側の式を復元できなくなるため。
+        let formula: string | undefined;
+        try {
+          formula = cell.formula;
+        } catch {
+          // 共有数式の親が存在しない補助セルは、式ではなくキャッシュ値として
+          // 保存する。Google Sheets への変換を止めないことを優先する。
+          formula = undefined;
+        }
         formulas.push({
           cell,
-          formula: cell.formula,
+          formula,
           result: cell.result,
         });
       });
