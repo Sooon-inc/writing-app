@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
-
-const client = new Anthropic();
+import { generateWriting } from "@/lib/claude";
+import { jsonrepair } from "jsonrepair";
 
 export const maxDuration = 300;
 
@@ -117,16 +116,7 @@ ${fieldList}
 
 上記の項目を埋めたJSONを返してください。`;
 
-  const msg = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 8192,
-    system: systemPrompt,
-    messages: [
-      { role: "user", content: userPrompt },
-    ],
-  });
-
-  const text = (msg.content[0] as { type: string; text: string }).text;
+  const text = await generateWriting(systemPrompt, userPrompt);
 
   // コードブロック除去、レスポンス内の最初の { から最後の } を抽出
   let cleaned = text
@@ -140,7 +130,7 @@ ${fieldList}
   }
 
   try {
-    const parsed = JSON.parse(cleaned) as Record<string, string>;
+    const parsed = JSON.parse(jsonrepair(cleaned)) as Record<string, string>;
     const result: Record<number, string> = {};
     for (const [k, v] of Object.entries(parsed)) {
       const rowNum = parseInt(String(k).replace(/[^0-9]/g, "").trim());
@@ -153,73 +143,88 @@ ${fieldList}
 }
 
 export async function POST(req: NextRequest) {
-  const { projectId, sheetName, instanceKey, theme } = (await req.json()) as {
-    projectId: string;
-    sheetName: string;
-    instanceKey: string;
-    theme?: string;
-  };
+  try {
+    const { projectId, sheetName, instanceKey, theme } = (await req.json()) as {
+      projectId: string;
+      sheetName: string;
+      instanceKey: string;
+      theme?: string;
+    };
 
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
-  if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
 
-  const templatePath = HP_TEMPLATE_PATHS[project.type];
-  if (!templatePath) {
-    return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
-  }
+    const templatePath = HP_TEMPLATE_PATHS[project.type];
+    if (!templatePath) {
+      return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
+    }
 
   // GBP URL が Google Maps URL なら Places API で情報取得
-  const isMapsUrl = (url: string) =>
-    url.includes("google.com/maps") ||
-    url.includes("maps.google.com") ||
-    url.includes("goo.gl") ||
-    url.includes("maps.app.goo.gl");
-  const gbpContent = project.gbpUrl && isMapsUrl(project.gbpUrl)
-    ? await getPlaceInfoFromMapsUrl(project.gbpUrl).catch(() => "")
-    : "";
+    const isMapsUrl = (url: string) =>
+      url.includes("google.com/maps") ||
+      url.includes("maps.google.com") ||
+      url.includes("goo.gl") ||
+      url.includes("maps.app.goo.gl");
+    const gbpContent = project.gbpUrl && isMapsUrl(project.gbpUrl)
+      ? await getPlaceInfoFromMapsUrl(project.gbpUrl).catch(() => "")
+      : "";
 
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
 
-  const fields = await extractSheetFields(wb, sheetName);
-  const industries = (() => {
-    try { return JSON.parse(project.industries ?? "[]") as string[]; } catch { return []; }
-  })();
-  const content = await generatePageContent(
-    sheetName,
-    fields,
-    project.hpContent ?? "",
-    `【業種】${industries.join("、")}\n${project.hearing ?? ""}`,
-    theme ?? "",
-    gbpContent
-  );
-  const checked = await reviewAndReviseMarketingJson(content, {
-    contentType: `HP:${sheetName}`,
-    maxRevisionAttempts: 0,
-  });
-  const hpPageOutputs: Record<string, Record<number, string>> = {
-    [instanceKey]: checked.output,
-  };
-
-  // Merge with existing hpPageOutputs so each call accumulates rather than overwrites
-  let existingOutputs: Record<string, Record<number, string>> = {};
-  try {
-    if (project.hpPageOutputs) {
-      existingOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<number, string>>;
+    const fields = await extractSheetFields(wb, sheetName);
+    if (fields.length === 0) {
+      return NextResponse.json({ error: `${sheetName}の入力項目が見つかりませんでした` }, { status: 400 });
     }
-  } catch { /* ignore */ }
-  const mergedOutputs = { ...existingOutputs, ...hpPageOutputs };
 
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      hpPageOutputs: JSON.stringify(mergedOutputs),
-    },
-  });
+    const industries = (() => {
+      try { return JSON.parse(project.industries ?? "[]") as string[]; } catch { return []; }
+    })();
+    const content = await generatePageContent(
+      sheetName,
+      fields,
+      project.hpContent ?? "",
+      `【業種】${industries.join("、")}\n${project.hearing ?? ""}`,
+      theme ?? "",
+      gbpContent
+    );
 
-  return NextResponse.json({
-    hpPageOutputs,
-    qualityReview: checked.review,
-    qualityRevisionAttempts: checked.attempts,
-  });
+    const checked = await reviewAndReviseMarketingJson(content, {
+      contentType: `HP:${sheetName}`,
+      maxRevisionAttempts: 0,
+    }).catch((error) => {
+      console.warn(`[generate-hp-pages] quality review skipped for ${sheetName}:`, error instanceof Error ? error.message : String(error));
+      return { output: content, review: null, attempts: 0 };
+    });
+
+    const hpPageOutputs: Record<string, Record<number, string>> = {
+      [instanceKey]: checked.output,
+    };
+
+    // Merge with existing hpPageOutputs so each call accumulates rather than overwrites
+    let existingOutputs: Record<string, Record<number, string>> = {};
+    try {
+      if (project.hpPageOutputs) {
+        existingOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<number, string>>;
+      }
+    } catch { /* ignore */ }
+    const mergedOutputs = { ...existingOutputs, ...hpPageOutputs };
+
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        hpPageOutputs: JSON.stringify(mergedOutputs),
+      },
+    });
+
+    return NextResponse.json({
+      hpPageOutputs,
+      qualityReview: checked.review,
+      qualityRevisionAttempts: checked.attempts,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[generate-hp-pages] failed:", message);
+    return NextResponse.json({ error: message || "HPページ生成に失敗しました" }, { status: 500 });
+  }
 }
