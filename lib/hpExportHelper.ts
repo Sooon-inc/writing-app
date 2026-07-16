@@ -40,6 +40,42 @@ function cloneCellValue(sourceCell: ExcelJS.Cell): ExcelJS.CellValue {
   return sourceCell.value;
 }
 
+/**
+ * Google スプレッドシート変換用に、ブック内の共有数式をすべて通常数式へ変換する。
+ *
+ * 元テンプレートに残っている共有数式も、追加ページ複製後に親セルとの関連が
+ * 不正になることがある。シートを削除した後にまとめて正規化することで、
+ * 出力ブック内に sharedFormula を残さない。
+ */
+function normalizeWorkbookFormulas(wb: ExcelJS.Workbook): void {
+  const formulas: Array<{
+    cell: ExcelJS.Cell;
+    formula: string | undefined;
+    result: ExcelJS.CellValue;
+  }> = [];
+
+  for (const sheet of wb.worksheets) {
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        if (cell.type !== ExcelJS.ValueType.Formula) return;
+        // 先に全セルの式を取得する。共有数式の親を上書きした後では、
+        // クローン側の式を復元できなくなるため。
+        formulas.push({
+          cell,
+          formula: cell.formula,
+          result: cell.result,
+        });
+      });
+    });
+  }
+
+  for (const { cell, formula, result } of formulas) {
+    cell.value = formula
+      ? ({ formula, result } as ExcelJS.CellFormulaValue)
+      : result ?? null;
+  }
+}
+
 /** ワークシートを複製して新しい名前で追加 */
 function cloneWorksheet(
   wb: ExcelJS.Workbook,
@@ -186,4 +222,6 @@ export function applyHpOutputsToWorkbook(
       if (sheet) wb.removeWorksheet(sheet.id);
     }
   }
+
+  normalizeWorkbookFormulas(wb);
 }
