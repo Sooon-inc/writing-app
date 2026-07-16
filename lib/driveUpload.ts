@@ -224,7 +224,7 @@ export async function uploadToGoogleSheets(
   name: string,
   buffer: Buffer | ArrayBuffer,
   folderId: string
-): Promise<{ id: string; webViewLink: string }> {
+): Promise<{ id: string; webViewLink: string; warning?: string }> {
   const drive = google.drive({ version: "v3", auth });
   const buf = toBuffer(buffer);
 
@@ -270,6 +270,7 @@ export async function uploadToGoogleSheets(
   }
 
   if (uploadedFile) {
+    let warning: string | undefined;
     try {
       console.log("Drive share permission started:", uploadedFile.id);
       await makeFileShareableReadOnly(auth, uploadedFile.id);
@@ -290,16 +291,18 @@ export async function uploadToGoogleSheets(
       const msg = extractErrorMessage(e);
       console.error("Sheets checkbox restore failed:", msg);
       if (isSheetsApiDisabledError(msg)) {
+        warning = "Google Sheets APIが無効なため、チェックボックスを復元できませんでした。Google Cloudプロジェクト 913052066974 でGoogle Sheets APIを有効にしてから、再度出力してください。";
         console.warn(
           "Sheets API is disabled. The spreadsheet was created, but checkbox restore was skipped."
         );
       } else {
+        warning = `チェックボックスの復元に失敗しました: ${msg}`;
         console.warn(
           "The spreadsheet was created, but checkbox restore was skipped due to an error."
         );
       }
     }
-    return uploadedFile;
+    return { ...uploadedFile, warning };
   }
 
   const message = extractErrorMessage(lastError);

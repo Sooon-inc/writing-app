@@ -3,6 +3,7 @@ import {
   hasBeautyTopSection04ExtraRows,
   prepareBeautyTopSection04ExtraRows,
 } from "@/lib/hpExtraRows";
+import type { DirectoryMetadata } from "@/lib/hpDirectoryMetadata";
 
 export interface HpSitemapItem {
   id: string;
@@ -91,6 +92,132 @@ function normalizeWorkbookFormulas(wb: ExcelJS.Workbook): void {
   }
 }
 
+function normalizedDirectoryLabel(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/^【option】/, "")
+    .replace(/[・･\s]/g, "")
+    .replace(/（一覧）/g, "")
+    .replace(/紹介/g, "")
+    .trim();
+}
+
+function copyRowStyle(source: ExcelJS.Row, destination: ExcelJS.Row): void {
+  destination.height = source.height;
+  for (let col = 1; col <= source.worksheet.columnCount; col += 1) {
+    const sourceCell = source.getCell(col);
+    const destinationCell = destination.getCell(col);
+    if (sourceCell.style) {
+      destinationCell.style = JSON.parse(JSON.stringify(sourceCell.style));
+    }
+  }
+}
+
+/** 生成済みページだけをディレクトリシートへ反映する。 */
+function applyDirectoryMetadata(
+  wb: ExcelJS.Workbook,
+  metadata: DirectoryMetadata[]
+): void {
+  if (metadata.length === 0) return;
+  const sheet = wb.worksheets.find((item) => item.name.includes("ディレクトリ"));
+  if (!sheet) return;
+
+  const usedRows = new Set<number>();
+  const findMatchingRow = (label: string): number | undefined => {
+    const normalized = normalizedDirectoryLabel(label);
+    for (let rowNumber = 4; rowNumber <= sheet.rowCount; rowNumber += 1) {
+      if (usedRows.has(rowNumber)) continue;
+      const row = sheet.getRow(rowNumber);
+      const dLabel = String(row.getCell(4).value ?? "");
+      const topLabel = String(row.getCell(2).value ?? "");
+      const candidate = dLabel || (topLabel === "トップ" ? topLabel : "");
+      if (
+        candidate &&
+        normalizedDirectoryLabel(candidate) === normalized
+      ) {
+        return rowNumber;
+      }
+    }
+    return undefined;
+  };
+
+  const blankReservedRows = (): number[] => {
+    const rows: number[] = [];
+    for (let rowNumber = 4; rowNumber <= sheet.rowCount; rowNumber += 1) {
+      const row = sheet.getRow(rowNumber);
+      const hasPageNumber = Number(row.getCell(1).value) > 0;
+      const hasPageLabel = [2, 3, 4, 5].some(
+        (col) => String(row.getCell(col).value ?? "").trim()
+      );
+      if (hasPageNumber && !hasPageLabel && !usedRows.has(rowNumber)) {
+        rows.push(rowNumber);
+      }
+    }
+    return rows;
+  };
+
+  const nextPageNumber = () => {
+    let max = 0;
+    for (let rowNumber = 4; rowNumber <= sheet.rowCount; rowNumber += 1) {
+      max = Math.max(max, Number(sheet.getRow(rowNumber).getCell(1).value) || 0);
+    }
+    return max + 1;
+  };
+
+  const appendPageRow = (label: string): number => {
+    const reserved = blankReservedRows()[0];
+    if (reserved) {
+      sheet.getRow(reserved).getCell(4).value = label;
+      return reserved;
+    }
+
+    let insertAt = sheet.rowCount + 1;
+    for (let rowNumber = 4; rowNumber <= sheet.rowCount; rowNumber += 1) {
+      const row = sheet.getRow(rowNumber);
+      if (
+        !row.getCell(1).value &&
+        ([6, 7].some((col) => row.getCell(col).value === 0))
+      ) {
+        insertAt = rowNumber;
+        break;
+      }
+    }
+
+    sheet.insertRow(insertAt, []);
+    const sourceRow = sheet.getRow(Math.max(4, insertAt - 1));
+    const row = sheet.getRow(insertAt);
+    copyRowStyle(sourceRow, row);
+    row.getCell(1).value = nextPageNumber();
+    row.getCell(4).value = label;
+
+    // テンプレートの進捗列を実際のチェックボックス対象として保持する。
+    for (const col of [6, 7]) {
+      const hasBooleanColumn = sheet
+        .getColumn(col)
+        .values.some((value) => typeof value === "boolean");
+      if (hasBooleanColumn) row.getCell(col).value = false;
+    }
+    return insertAt;
+  };
+
+  const duplicateCounts = new Map<string, number>();
+  for (const item of metadata) {
+    const normalized = normalizedDirectoryLabel(item.label);
+    const duplicateNo = (duplicateCounts.get(normalized) ?? 0) + 1;
+    duplicateCounts.set(normalized, duplicateNo);
+    const displayLabel = duplicateNo === 1
+      ? item.label
+      : `${item.label}（${duplicateNo}）`;
+    const rowNumber = findMatchingRow(item.label) ?? appendPageRow(displayLabel);
+    const row = sheet.getRow(rowNumber);
+    row.getCell(10).value = item.h1;
+    row.getCell(14).value = item.description;
+    usedRows.add(rowNumber);
+  }
+
+  sheet.getCell("D1").value = nextPageNumber() - 1;
+}
+
 /** ワークシートを複製して新しい名前で追加 */
 function cloneWorksheet(
   wb: ExcelJS.Workbook,
@@ -176,7 +303,8 @@ export function applyHpOutputsToWorkbook(
   hpPageOutputs: Record<string, Record<string, string>>,
   sitemapItems: HpSitemapItem[],
   pageThemes: Record<string, string>,
-  fixedSheetColMap?: Record<string, number>
+  fixedSheetColMap?: Record<string, number>,
+  directoryMetadata: DirectoryMetadata[] = []
 ): void {
   const findSheet = (name: string) =>
     wb.getWorksheet(name) ??
@@ -238,5 +366,6 @@ export function applyHpOutputsToWorkbook(
     }
   }
 
+  applyDirectoryMetadata(wb, directoryMetadata);
   normalizeWorkbookFormulas(wb);
 }

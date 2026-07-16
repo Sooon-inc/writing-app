@@ -8,6 +8,7 @@ import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
 import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
+import { generateHpDirectoryMetadata } from "@/lib/hpDirectoryMetadata";
 
 export const maxDuration = 300;
 
@@ -61,12 +62,26 @@ export async function POST(req: NextRequest) {
   try {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
+    const directoryMetadata = await generateHpDirectoryMetadata(
+      project.name,
+      project.type,
+      hpPageOutputs,
+      sitemapItems,
+      pageThemes
+    );
     // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
     const fixedSheetColMap = project.type === "hp-strong" ? {
       "トップ": 9,               // I 列
       "代表挨拶・スタッフ紹介": 7, // G 列
     } : undefined;
-    applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes, fixedSheetColMap);
+    applyHpOutputsToWorkbook(
+      wb,
+      hpPageOutputs,
+      sitemapItems,
+      pageThemes,
+      fixedSheetColMap,
+      directoryMetadata
+    );
     buffer = await wb.xlsx.writeBuffer();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -75,13 +90,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { webViewLink } = await uploadToGoogleSheets(
+    const { webViewLink, warning } = await uploadToGoogleSheets(
       oauth2Client,
       `${project.name}_HPヒアリングシート`,
       Buffer.from(buffer),
       DRIVE_FOLDER_IDS.hp
     );
-    return NextResponse.json({ url: webViewLink });
+    return NextResponse.json({ url: webViewLink, warning });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Drive upload error:", msg);

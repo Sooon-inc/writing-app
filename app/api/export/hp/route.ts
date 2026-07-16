@@ -4,6 +4,9 @@ import path from "path";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
+import { generateHpDirectoryMetadata } from "@/lib/hpDirectoryMetadata";
+
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const { projectId } = (await req.json()) as { projectId: string };
@@ -40,13 +43,27 @@ export async function POST(req: NextRequest) {
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
+  const directoryMetadata = await generateHpDirectoryMetadata(
+    project.name,
+    project.type,
+    hpPageOutputs,
+    sitemapItems,
+    pageThemes
+  );
 
   // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
   const fixedSheetColMap = project.type === "hp-strong" ? {
     "トップ": 9,               // I 列
     "代表挨拶・スタッフ紹介": 7, // G 列
   } : undefined;
-  applyHpOutputsToWorkbook(wb, hpPageOutputs, sitemapItems, pageThemes, fixedSheetColMap);
+  applyHpOutputsToWorkbook(
+    wb,
+    hpPageOutputs,
+    sitemapItems,
+    pageThemes,
+    fixedSheetColMap,
+    directoryMetadata
+  );
 
   const buffer = await wb.xlsx.writeBuffer();
   const fileName = encodeURIComponent(`${project.name}_HPヒアリングシート.xlsx`);

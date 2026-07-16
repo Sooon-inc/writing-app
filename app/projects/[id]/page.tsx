@@ -959,6 +959,7 @@ export default function ProjectDetailPage() {
   const [autoTriggerLoading, setAutoTriggerLoading] = useState(false);
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState("");
+  const [sheetWarning, setSheetWarning] = useState("");
 
   // OAuth後にURLパラメータ openSheet / authError があれば処理
   useEffect(() => {
@@ -982,6 +983,7 @@ export default function ProjectDetailPage() {
   const handleOpenHpSheet = async () => {
     setOpeningHpSheet(true);
     setSheetError("");
+    setSheetWarning("");
     setSheetUrl(null);
     try {
       const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
@@ -999,8 +1001,9 @@ export default function ProjectDetailPage() {
         setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
         return;
       }
-      const { url } = await res.json();
+      const { url, warning } = await res.json() as { url: string; warning?: string };
       setSheetUrl(url);
+      if (warning) setSheetWarning(warning);
     } catch (error) {
       setSheetError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1280,6 +1283,12 @@ export default function ProjectDetailPage() {
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-center justify-between">
             <p className="text-sm text-red-600">{sheetError}</p>
             <button onClick={() => setSheetError("")} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+          </div>
+        )}
+        {sheetWarning && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center justify-between gap-4">
+            <p className="text-sm text-amber-700">{sheetWarning}</p>
+            <button onClick={() => setSheetWarning("")} className="text-amber-500 hover:text-amber-700 text-lg leading-none">×</button>
           </div>
         )}
 
