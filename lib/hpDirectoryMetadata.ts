@@ -41,13 +41,33 @@ function fitH1(
   projectName: string
 ): string {
   let value = cleanText(generated) || `${projectName}の${label}`;
+  if (lengthOf(value) > 35) return truncate(value, 35);
+  const original = value;
+
+  const shortBrand = cleanText(projectName).replace(
+    /^(株式会社|有限会社|合同会社|合資会社|一般社団法人|一般財団法人)/,
+    ""
+  );
+  const suffix = shortBrand && value.includes(shortBrand)
+    ? `｜${label}ページ`
+    : `｜${shortBrand || projectName}`;
+
   if (lengthOf(value) < 30) {
-    value = `${value}｜${label}の特徴や取り組みを詳しくご紹介`;
+    value = `${value}${suffix}`;
   }
   if (lengthOf(value) < 30) {
-    value = `${value}する公式ページ`;
+    value = `${value}公式サイト`;
   }
-  return truncate(value, 35);
+  if (lengthOf(value) < 30) {
+    value = `${value}｜${label}をご案内`;
+  }
+
+  if (lengthOf(value) <= 35) return value;
+
+  // 末尾の意味が途中で切れないよう、追加部分を残して元の見出し側を縮める。
+  const appended = Array.from(value).slice(lengthOf(original)).join("");
+  const available = Math.max(1, 35 - lengthOf(appended));
+  return `${truncate(original, available)}${appended}`;
 }
 
 function fitDescription(generated: string, fallback: string): string {
