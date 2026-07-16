@@ -11,13 +11,19 @@ import {
   beautyTopSection04ExtraPrompt,
   isBeautyTopSheet,
 } from "@/lib/hpExtraRows";
+import {
+  DIRECTORY_OUTPUT_KEY,
+  LP_DIRECTORY_DESCRIPTION_ROW,
+  LP_DIRECTORY_H1_ROW,
+  directoryRowsToItems,
+} from "@/lib/directoryOutput";
 
 const client = new Anthropic();
 
 export type ChatOutput =
   | { type: "meo" | "portal"; data: Record<string, unknown> }
-  | { type: "hp"; data: Record<string, Record<number, string>>; themes: Record<string, string> }
-  | { type: "lp"; data: Record<number, string> };
+  | { type: "hp"; data: Record<string, Record<string | number, string>>; themes: Record<string, string> }
+  | { type: "lp"; data: Record<string | number, string> };
 
 export type UpdatePayload =
   | { kind: "output"; diff: Record<string, unknown> }
@@ -100,6 +106,12 @@ async function formatOutputForPrompt(
       .sort(([a], [b]) => parseInt(a) - parseInt(b))
       .map(([rowNum, v]) => {
         const rn = parseInt(rowNum);
+        if (rn === LP_DIRECTORY_H1_ROW) {
+          return `[ディレクトリ] H1（30〜35文字） (行${rn}): ${v}`;
+        }
+        if (rn === LP_DIRECTORY_DESCRIPTION_ROW) {
+          return `[ディレクトリ] ディスクリプション（最大120文字） (行${rn}): ${v}`;
+        }
         const field = fieldMap.get(rn);
         return field
           ? `[${field.section}] ${field.label} (行${rn}): ${v}`
@@ -155,6 +167,15 @@ async function formatOutputForPrompt(
   const hpOutput = currentOutput;
   return Object.entries(hpOutput.data)
     .map(([key, rows]) => {
+      if (key === DIRECTORY_OUTPUT_KEY) {
+        const directoryLines = directoryRowsToItems(rows)
+          .flatMap((item) => [
+            `  [${item.label}] H1（30〜35文字） (行${item.h1Row}): ${item.h1}`,
+            `  [${item.label}] ディスクリプション（最大120文字） (行${item.descriptionRow}): ${item.description}`,
+          ])
+          .join("\n");
+        return `【ディレクトリ】\n${directoryLines}`;
+      }
       const theme = hpOutput.themes[key] ? `（テーマ: ${hpOutput.themes[key]}）` : "";
       const sheetName = instanceToSheet[key] ?? key;
       const fieldMap = fieldMaps[sheetName] ?? new Map();

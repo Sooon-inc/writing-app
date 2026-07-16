@@ -14,7 +14,7 @@ type SitemapItem = {
   sheetName: string;
 };
 
-type DirectoryPageInput = {
+export type DirectoryPageInput = {
   key: string;
   label: string;
   theme: string;
@@ -162,6 +162,13 @@ export async function generateHpDirectoryMetadata(
     sitemapItems,
     pageThemes
   );
+  return generateDirectoryMetadataForPages(projectName, pages);
+}
+
+export async function generateDirectoryMetadataForPages(
+  projectName: string,
+  pages: DirectoryPageInput[]
+): Promise<DirectoryMetadata[]> {
   if (pages.length === 0) return [];
 
   const systemPrompt = `あなたは日本語のWebライティングとSEOメタ情報の編集者です。

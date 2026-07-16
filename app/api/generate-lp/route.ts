@@ -5,6 +5,8 @@ import path from "path";
 import { prisma } from "@/lib/prisma";
 import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
+import { generateDirectoryMetadataForPages } from "@/lib/hpDirectoryMetadata";
+import { addLpDirectoryToOutput } from "@/lib/directoryOutput";
 
 const client = new Anthropic();
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
@@ -145,18 +147,40 @@ export async function POST(req: NextRequest) {
     contentType: "LP",
   });
 
+  const lpText = Object.entries(checked.output)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, value]) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .slice(0, 2400);
+  const directoryMetadata = await generateDirectoryMetadataForPages(
+    project.name,
+    lpText
+      ? [{
+          key: "LP",
+          label: "LP（ランディングページ）",
+          theme: theme ?? "",
+          content: lpText,
+        }]
+      : []
+  );
+  const outputWithDirectory = addLpDirectoryToOutput(
+    checked.output as Record<number | string, string>,
+    directoryMetadata[0]
+  );
+
   const themesJson = JSON.stringify({ LP: theme ?? "" });
 
   await prisma.project.update({
     where: { id: projectId },
     data: {
-      hpPageOutputs: JSON.stringify({ LP: checked.output }),
+      hpPageOutputs: JSON.stringify({ LP: outputWithDirectory }),
       hpPageThemes: themesJson,
     },
   });
 
   return NextResponse.json({
-    lpOutput: checked.output,
+    lpOutput: outputWithDirectory,
     qualityReview: checked.review,
     qualityRevisionAttempts: checked.attempts,
   });

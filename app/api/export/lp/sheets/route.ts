@@ -6,6 +6,7 @@ import { google } from "googleapis";
 import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { prisma } from "@/lib/prisma";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
+import { applyLpOutputsToWorkbook } from "@/lib/lpExportHelper";
 
 const LP_TEMPLATE_PATH = "templates/lp/lp.xlsx";
 export const maxDuration = 300;
@@ -39,16 +40,7 @@ export async function POST(req: NextRequest) {
   try {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(path.join(process.cwd(), LP_TEMPLATE_PATH));
-    const sheet = wb.getWorksheet("LP");
-    if (!sheet) throw new Error("LP sheet not found in template");
-    for (const [rowNumStr, value] of Object.entries(lpRows)) {
-      if (!value) continue;
-      const rowNum = parseInt(rowNumStr);
-      const row = sheet.getRow(rowNum);
-      const cell = row.getCell(10);
-      cell.value = value;
-      row.commit();
-    }
+    applyLpOutputsToWorkbook(wb, lpRows);
     buffer = await wb.xlsx.writeBuffer();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -57,13 +49,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { webViewLink } = await uploadToGoogleSheets(
+    const { webViewLink, warning } = await uploadToGoogleSheets(
       oauth2Client,
       `${project.name}_LPヒアリングシート`,
       Buffer.from(buffer),
       DRIVE_FOLDER_IDS.lp
     );
-    return NextResponse.json({ url: webViewLink });
+    return NextResponse.json({ url: webViewLink, warning });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Drive upload error:", msg);

@@ -13,6 +13,13 @@ import PortalSheetPreview from "@/components/PortalSheetPreview";
 import { PROJECT_TYPE_LABELS } from "@/lib/projectTypes";
 import AppSidebar from "@/components/AppSidebar";
 import { normalizeMeoOutput } from "@/lib/meoOutput";
+import DirectoryOutputCard from "@/components/DirectoryOutputCard";
+import {
+  DIRECTORY_OUTPUT_KEY,
+  directoryRowsToItems,
+  getLpDirectoryItem,
+  type DirectoryRows,
+} from "@/lib/directoryOutput";
 
 const HP_TYPES = ["hp-classic", "hp-strong", "hp-beauty", "hp-recruit"];
 const SHEET_EXPORT_TIMEOUT_MS = 120000;
@@ -191,7 +198,7 @@ export default function ProjectDetailPage() {
   const [sitemapItems, setSitemapItems] = useState<SitemapItem[]>([]);
   // pageThemes: id（任意ページ）またはsheetName（固定ページ）→ theme/keyword text
   const [pageThemes, setPageThemes] = useState<Record<string, string>>({});
-  const [hpPageOutputs, setHpPageOutputs] = useState<Record<string, Record<number, string>> | null>(null);
+  const [hpPageOutputs, setHpPageOutputs] = useState<Record<string, Record<string | number, string>> | null>(null);
   const [generatingHp, setGeneratingHp] = useState(false);
   const [hpGenError, setHpGenError] = useState("");
   const [generatingSheet, setGeneratingSheet] = useState("");
@@ -514,7 +521,7 @@ export default function ProjectDetailPage() {
         body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
-      const allOutputs: Record<string, Record<number, string>> = {};
+      const allOutputs: Record<string, Record<string | number, string>> = {};
       for (let index = 0; index < allItems.length; index += 2) {
         const batch = allItems.slice(index, index + 2);
         setGeneratingSheet(batch.map((item) => item.label).join(" / "));
@@ -544,7 +551,26 @@ export default function ProjectDetailPage() {
         body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
-      setHpPageOutputs(allOutputs);
+      setGeneratingSheet("ディレクトリ");
+      const directoryRes = await fetchWithTimeout("/api/generate-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      }, GENERATION_TIMEOUT_MS, "ディレクトリ生成");
+      const directoryData = await readJsonResponse<{
+        directoryRows?: DirectoryRows;
+        hpPageOutputs?: Record<string, Record<string | number, string>>;
+        error?: string;
+      }>(directoryRes);
+      if (!directoryRes.ok || !directoryData.directoryRows) {
+        throw new Error(directoryData.error ?? "ディレクトリの生成に失敗しました");
+      }
+      setHpPageOutputs(
+        directoryData.hpPageOutputs ?? {
+          ...allOutputs,
+          [DIRECTORY_OUTPUT_KEY]: directoryData.directoryRows,
+        }
+      );
     } catch (error) {
       setHpGenError(getErrorMessage(error));
     } finally {
@@ -583,7 +609,7 @@ export default function ProjectDetailPage() {
       }, AUTH_CHECK_TIMEOUT_MS);
 
       // 既存の出力を引き継ぎ、追加ページの出力のみ上書き
-      const allOutputs: Record<string, Record<number, string>> = { ...(hpPageOutputs ?? {}) };
+      const allOutputs: Record<string, Record<string | number, string>> = { ...(hpPageOutputs ?? {}) };
       for (let index = 0; index < optionalItems.length; index += 2) {
         const batch = optionalItems.slice(index, index + 2);
         setGeneratingSheet(batch.map((item) => item.label).join(" / "));
@@ -613,7 +639,26 @@ export default function ProjectDetailPage() {
         body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
-      setHpPageOutputs(allOutputs);
+      setGeneratingSheet("ディレクトリ");
+      const directoryRes = await fetchWithTimeout("/api/generate-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      }, GENERATION_TIMEOUT_MS, "ディレクトリ生成");
+      const directoryData = await readJsonResponse<{
+        directoryRows?: DirectoryRows;
+        hpPageOutputs?: Record<string, Record<string | number, string>>;
+        error?: string;
+      }>(directoryRes);
+      if (!directoryRes.ok || !directoryData.directoryRows) {
+        throw new Error(directoryData.error ?? "ディレクトリの生成に失敗しました");
+      }
+      setHpPageOutputs(
+        directoryData.hpPageOutputs ?? {
+          ...allOutputs,
+          [DIRECTORY_OUTPUT_KEY]: directoryData.directoryRows,
+        }
+      );
     } catch (error) {
       setHpGenError(getErrorMessage(error));
     } finally {
@@ -660,7 +705,10 @@ export default function ProjectDetailPage() {
         next[key] = {
           ...(next[key] ?? {}),
           ...Object.fromEntries(
-            Object.entries(rows).map(([r, v]) => [parseInt(r), v])
+            Object.entries(rows).map(([r, v]) => {
+              const numericRow = Number(r);
+              return [Number.isInteger(numericRow) ? numericRow : r, v];
+            })
           ),
         };
       }
@@ -1014,6 +1062,7 @@ export default function ProjectDetailPage() {
   const handleOpenLpSheet = async () => {
     setOpeningLpSheet(true);
     setSheetError("");
+    setSheetWarning("");
     setSheetUrl(null);
     try {
       const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
@@ -1031,8 +1080,9 @@ export default function ProjectDetailPage() {
         setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
         return;
       }
-      const { url } = await res.json();
+      const { url, warning } = await res.json() as { url: string; warning?: string };
       setSheetUrl(url);
+      if (warning) setSheetWarning(warning);
     } catch (error) {
       setSheetError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1071,7 +1121,7 @@ export default function ProjectDetailPage() {
 
   // LP state
   const [lpTheme, setLpTheme] = useState("");
-  const [lpOutput, setLpOutput] = useState<Record<number, string> | null>(null);
+  const [lpOutput, setLpOutput] = useState<Record<number | string, string> | null>(null);
   const [generatingLp, setGeneratingLp] = useState(false);
   const [lpGenError, setLpGenError] = useState("");
   const [lpFieldDefs, setLpFieldDefs] = useState<LpFieldDef[]>([]);
@@ -1101,7 +1151,7 @@ export default function ProjectDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId: id, theme: lpTheme }),
       }, GENERATION_TIMEOUT_MS, "AI生成");
-      const data = await readJsonResponse<{ lpOutput?: Record<number, string>; error?: string }>(res);
+      const data = await readJsonResponse<{ lpOutput?: Record<number | string, string>; error?: string }>(res);
       if (!res.ok || !data.lpOutput) { setLpGenError(data.error ?? "生成に失敗しました"); return; }
       setLpOutput(data.lpOutput);
     } catch (error) {
@@ -1169,8 +1219,9 @@ export default function ProjectDetailPage() {
           setSheetError((data as { error?: string }).error ?? "スプレッドシートの作成に失敗しました");
           return;
         }
-        const { url } = await res.json();
+        const { url, warning } = await res.json() as { url: string; warning?: string };
         setSheetUrl(url);
+        if (warning) setSheetWarning(warning);
       } catch (e) {
         setSheetError(String(e));
       } finally {
@@ -1239,6 +1290,10 @@ export default function ProjectDetailPage() {
       outputKeyToLabel[item.id] = found ? found.label : item.sheetName;
     }
   }
+  const hpDirectoryItems = directoryRowsToItems(
+    hpPageOutputs?.[DIRECTORY_OUTPUT_KEY]
+  );
+  const lpDirectoryItem = getLpDirectoryItem(lpOutput);
 
   return (
     <main className={`project-workspace ${aiOpen && chatOutput ? "with-ai" : ""}`}>
@@ -1561,6 +1616,16 @@ export default function ProjectDetailPage() {
                     </button>
                   </div>
                 </div>
+                {lpDirectoryItem && (
+                  <DirectoryOutputCard
+                    items={[lpDirectoryItem]}
+                    instanceKey="LP"
+                    selectedTargets={selectedTargets}
+                    onToggleField={toggleSelectedTarget}
+                    onDeleteField={handleDeleteTarget}
+                    onEditField={handleEditTarget}
+                  />
+                )}
                 <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   {lpFieldDefs.length > 0 ? (
                     <OutputTable
@@ -1759,7 +1824,19 @@ export default function ProjectDetailPage() {
                     </button>
                   </div>
                 </div>
-                {Object.entries(hpPageOutputs).map(([key, rows]) => {
+                {hpDirectoryItems.length > 0 && (
+                  <DirectoryOutputCard
+                    items={hpDirectoryItems}
+                    instanceKey={DIRECTORY_OUTPUT_KEY}
+                    selectedTargets={selectedTargets}
+                    onToggleField={toggleSelectedTarget}
+                    onDeleteField={handleDeleteTarget}
+                    onEditField={handleEditTarget}
+                  />
+                )}
+                {Object.entries(hpPageOutputs)
+                  .filter(([key]) => key !== DIRECTORY_OUTPUT_KEY)
+                  .map(([key, rows]) => {
                   const sheetName = (() => {
                     // Fixed pages: key === sheetName
                     const fixedMatch = sitemapConfig.find((p) => p.fixed && p.sheetName === key);

@@ -5,6 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
 import { generateHpDirectoryMetadata } from "@/lib/hpDirectoryMetadata";
+import {
+  DIRECTORY_OUTPUT_KEY,
+  directoryRowsToMetadata,
+} from "@/lib/directoryOutput";
 
 export const maxDuration = 300;
 
@@ -23,6 +27,9 @@ export async function POST(req: NextRequest) {
   }
 
   const hpPageOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
+  const contentOutputs = Object.fromEntries(
+    Object.entries(hpPageOutputs).filter(([key]) => key !== DIRECTORY_OUTPUT_KEY)
+  );
 
   // sitemap から sitemapItems を復元
   let sitemapItems: HpSitemapItem[] = [];
@@ -43,13 +50,18 @@ export async function POST(req: NextRequest) {
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path.join(process.cwd(), templatePath));
-  const directoryMetadata = await generateHpDirectoryMetadata(
-    project.name,
-    project.type,
-    hpPageOutputs,
-    sitemapItems,
-    pageThemes
+  const storedDirectoryMetadata = directoryRowsToMetadata(
+    hpPageOutputs[DIRECTORY_OUTPUT_KEY]
   );
+  const directoryMetadata = storedDirectoryMetadata.length > 0
+    ? storedDirectoryMetadata
+    : await generateHpDirectoryMetadata(
+        project.name,
+        project.type,
+        contentOutputs,
+        sitemapItems,
+        pageThemes
+      );
 
   // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
   const fixedSheetColMap = project.type === "hp-strong" ? {
@@ -58,7 +70,7 @@ export async function POST(req: NextRequest) {
   } : undefined;
   applyHpOutputsToWorkbook(
     wb,
-    hpPageOutputs,
+    contentOutputs,
     sitemapItems,
     pageThemes,
     fixedSheetColMap,

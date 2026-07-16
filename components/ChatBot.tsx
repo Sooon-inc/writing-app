@@ -7,8 +7,8 @@ export type { SelectedTarget };
 
 export type ChatOutput =
   | { type: "meo" | "portal"; data: Record<string, unknown> }
-  | { type: "hp"; data: Record<string, Record<number, string>>; themes: Record<string, string> }
-  | { type: "lp"; data: Record<number, string> };
+  | { type: "hp"; data: Record<string, Record<string | number, string>>; themes: Record<string, string> }
+  | { type: "lp"; data: Record<string | number, string> };
 
 export type UpdatePayload =
   | { kind: "output"; diff: Record<string, unknown> }
