@@ -8,7 +8,6 @@ import { searchWeb } from "@/lib/scraper";
 import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 import { researchMeoContext } from "@/lib/meoResearch";
-import { reviewAndReviseMeo } from "@/lib/meoQuality";
 import { ensureMeoOutput } from "@/lib/meoOutput";
 import { jsonrepair } from "jsonrepair";
 
@@ -19,12 +18,7 @@ const MEO_PRIMARY_GENERATION_OPTIONS = {
   timeoutMs: 70_000,
   maxTokens: 8192,
 } as const;
-
-const MEO_QUALITY_GENERATION_OPTIONS = {
-  maxAttempts: 1,
-  timeoutMs: 55_000,
-  maxTokens: 8192,
-} as const;
+const MEO_ROUTE_TIMEOUT_MS = 230_000;
 
 type MeoServiceItem = {
   商品サービス名: string;
@@ -80,6 +74,22 @@ function compactSourceText(value: unknown, maxLength: number): string {
   const headLength = Math.floor(maxLength * 0.75);
   const tailLength = maxLength - headLength;
   return `${text.slice(0, headLength)}\n…（入力が長いため中略）…\n${text.slice(-tailLength)}`;
+}
+
+function withHardTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), Math.max(1_000, timeoutMs));
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 async function generateMeoProductDescriptions(input: {
@@ -224,11 +234,18 @@ export async function POST(req: Request) {
           })
         : Promise.resolve([]);
 
-    const result = await generateWriting(
+    const primaryGeneration = generateWriting(
       systemPrompt,
       userPrompt,
       type === "meo" ? MEO_PRIMARY_GENERATION_OPTIONS : undefined
     );
+    const result = type === "meo"
+      ? await withHardTimeout(
+          primaryGeneration,
+          MEO_ROUTE_TIMEOUT_MS - (Date.now() - requestStartedAt),
+          "MEO本文生成が時間内に完了しませんでした。もう一度実行してください。"
+        )
+      : await primaryGeneration;
     if (type === "meo") {
       console.log(`[meo] primary generation completed in ${Date.now() - requestStartedAt}ms`);
     }
@@ -248,7 +265,11 @@ export async function POST(req: Request) {
           ?? claudeServices[i]?.商品カテゴリ
           ?? "";
 
-        const generatedDescriptions = await productDescriptionsPromise;
+        const generatedDescriptions = await withHardTimeout(
+          productDescriptionsPromise,
+          MEO_ROUTE_TIMEOUT_MS - (Date.now() - requestStartedAt),
+          "MEO商品説明の生成が時間内に完了しませんでした。もう一度実行してください。"
+        );
 
         const getGenerated = (name: string, i: number): MeoServiceDescriptionItem | undefined =>
           generatedDescriptions.find((item) => item.商品サービス名 === name) ?? generatedDescriptions[i];
@@ -278,19 +299,14 @@ export async function POST(req: Request) {
       });
     }
 
-    const checked = await reviewAndReviseMeo(initialParsed, meoEvidenceContext, {
-      maxRevisionAttempts: 1,
-      recheckAfterRevision: false,
-      generation: MEO_QUALITY_GENERATION_OPTIONS,
-    });
-    const output = ensureMeoOutput(checked.output);
+    const output = ensureMeoOutput(initialParsed);
     console.log(
-      `[meo] generation and quality review completed in ${Date.now() - requestStartedAt}ms; revisions=${checked.attempts}`
+      `[meo] initial generation completed in ${Date.now() - requestStartedAt}ms; handing off to quality review`
     );
     return NextResponse.json({
       output,
-      qualityReview: checked.review,
-      qualityRevisionAttempts: checked.attempts,
+      qualityContext: meoEvidenceContext,
+      qualityPending: true,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";

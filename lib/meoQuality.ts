@@ -1,7 +1,7 @@
 import { jsonrepair } from "jsonrepair";
 import { generateWriting } from "@/lib/claude";
 
-type MeoReport = {
+export type MeoReport = {
   passed: boolean;
   score: number;
   issues: Array<{
@@ -13,6 +13,39 @@ type MeoReport = {
   }>;
   summary: string;
 };
+
+const REVIEW_AND_REVISE_PROMPT = `あなたはGoogleビジネスプロフィールとローカルSEOの監査・修正担当者です。
+入力されたMEO初期設計を根拠情報と照合し、問題を監査したうえで、必要な修正を反映した完成版を返してください。
+
+監査・修正ルール:
+- 住所、電話、営業時間、会社名、日付、価格、URL、Place ID、緯度経度は根拠と一致する場合のみ残す
+- 根拠のない実績、特徴、地域事情、順位効果、保証、最上級表現は削除する
+- ビジネス説明にURL、セール、価格訴求、キーワード羅列を入れない
+- 地域名は自然な文脈でのみ使い、同じ語を不自然に反復しない
+- 未確認のサービスは「商品サービス提案」にのみ残す
+- カテゴリは少数かつ具体的にする
+- 顧客の悩み、地域特性、サービス内容が自然につながる文章にする
+- 入力JSONのキー構造と商品・サービスの件数を維持する
+- reviewは簡潔にし、outputへ監査結果を反映する
+
+以下のJSONのみ返してください。コードブロックや前置きは禁止です。
+{
+  "review": {
+    "passed": true,
+    "score": 0,
+    "issues": [
+      {
+        "id": "fact_or_policy_issue",
+        "severity": "high",
+        "evidence": "修正前の生成文から正確に引用",
+        "reason": "問題の理由",
+        "instruction": "実施した修正"
+      }
+    ],
+    "summary": "監査と修正の所見"
+  },
+  "output": {}
+}`;
 
 const REVIEW_PROMPT = `あなたはGoogleビジネスプロフィールとローカルSEOの監査担当者です。
 生成されたMEO初期設計を、提供情報・調査情報・Google公式方針に照らして厳格に確認してください。
@@ -81,6 +114,32 @@ function extractJsonObject(raw: string): string {
   if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
 
   return trimmed;
+}
+
+export async function reviewAndReviseMeoSinglePass<T>(
+  initialOutput: T,
+  evidence: string,
+  generation: {
+    maxAttempts?: number;
+    timeoutMs?: number;
+    maxTokens?: number;
+  } = {}
+): Promise<{ output: T; review: MeoReport; attempts: number }> {
+  const result = parse<{ output?: T; review?: MeoReport }>(await generateWriting(
+    REVIEW_AND_REVISE_PROMPT,
+    `【根拠情報】\n${evidence}\n\n【修正前のMEO初期設計】\n${JSON.stringify(initialOutput)}`,
+    generation
+  ));
+
+  if (!result.output || !result.review) {
+    throw new Error("MEO品質確認結果のJSON形式が不正です");
+  }
+
+  return {
+    output: result.output,
+    review: result.review,
+    attempts: 1,
+  };
 }
 
 export async function reviewAndReviseMeo<T>(

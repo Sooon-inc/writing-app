@@ -458,9 +458,31 @@ export default function ProjectDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: project?.type, hpContent: project?.hpContent ?? "", hearing, industries: industries.filter((industry) => industry.trim()), products: filledProducts, gbpContent, gbpUrl: gbpUrl.trim() }),
       }, GENERATION_TIMEOUT_MS, "AI生成");
-      const data = await readJsonResponse<{ output?: unknown; error?: string }>(res);
+      const data = await readJsonResponse<{
+        output?: unknown;
+        qualityContext?: string;
+        qualityPending?: boolean;
+        error?: string;
+      }>(res);
       if (!res.ok) { setGenError(data.error ?? "生成に失敗しました"); return; }
-      const normalizedOutput = project?.type === "meo" ? normalizeMeoOutput(data.output) : data.output;
+      let completedOutput = data.output;
+      if (project?.type === "meo" && data.qualityPending) {
+        const reviewRes = await fetchWithTimeout("/api/review-meo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            output: data.output,
+            evidence: data.qualityContext ?? "",
+          }),
+        }, GENERATION_TIMEOUT_MS, "MEO品質確認");
+        const reviewData = await readJsonResponse<{ output?: unknown; error?: string }>(reviewRes);
+        if (!reviewRes.ok || !reviewData.output) {
+          setGenError(reviewData.error ?? "MEO品質確認に失敗しました");
+          return;
+        }
+        completedOutput = reviewData.output;
+      }
+      const normalizedOutput = project?.type === "meo" ? normalizeMeoOutput(completedOutput) : completedOutput;
       if (!normalizedOutput || !isPlainObject(normalizedOutput)) {
         setGenError("生成結果の形式が不正です。再生成してください。");
         return;
