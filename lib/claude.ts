@@ -48,6 +48,10 @@ function toReadableClaudeError(error: unknown): Error {
   if (isRetryableClaudeError(error)) {
     return new Error("AI生成サーバーが混み合っています。少し時間を置いてもう一度実行してください。");
   }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/request timed out|time.?out/i.test(message)) {
+    return new Error("AI生成が時間内に完了しませんでした。入力内容は保存されているため、もう一度実行してください。");
+  }
   return error instanceof Error ? error : new Error(String(error));
 }
 

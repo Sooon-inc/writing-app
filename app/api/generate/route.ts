@@ -15,10 +15,17 @@ export const maxDuration = 300;
 
 const MEO_PRIMARY_GENERATION_OPTIONS = {
   maxAttempts: 1,
-  timeoutMs: 70_000,
+  timeoutMs: 220_000,
   maxTokens: 8192,
 } as const;
-const MEO_ROUTE_TIMEOUT_MS = 230_000;
+const MEO_ROUTE_TIMEOUT_MS = 250_000;
+
+const MEO_PRODUCT_DESCRIPTIONS_DEFERRED_PROMPT = `
+
+【今回の商品サービス生成に関する最優先指示】
+商品サービスの長文説明は専用処理で別途生成します。
+「商品サービス」には入力された商品名と適切な商品カテゴリを同じ件数・順番で出力し、各「商品説明」は空文字（""）にしてください。
+店舗説明文、サービス、アンケートなど、商品説明以外の項目は通常どおり完成させてください。`;
 
 type MeoServiceItem = {
   商品サービス名: string;
@@ -179,7 +186,11 @@ export async function POST(req: Request) {
     const compactSearchInfo = compactSourceText(searchInfo, 6_000);
     const compactResearchInfo = compactSourceText(researchInfo, 12_000);
 
-    systemPrompt = meoSystemPrompt;
+    const hasInputProducts = Array.isArray(products)
+      && products.some((product: unknown) => typeof product === "string" && product.trim() !== "");
+    systemPrompt = hasInputProducts
+      ? `${meoSystemPrompt}${MEO_PRODUCT_DESCRIPTIONS_DEFERRED_PROMPT}`
+      : meoSystemPrompt;
     userPrompt = meoUserPrompt(
       compactHpContent,
       compactHearing,
