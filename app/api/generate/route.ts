@@ -146,8 +146,11 @@ export async function POST(req: Request) {
       businessName ? searchWeb(`${businessName} 最寄り駅 アクセス`) : Promise.resolve(""),
     ]);
 
-    // Places API の結果を優先、なければスクレイプ済み gbpContent を使用
-    const resolvedGbpContent = placesInfo || gbpContent || "";
+    // Places APIが一部情報しか返せない場合も、事前取得済みGBP情報を捨てずに統合する。
+    const resolvedGbpContent = [placesInfo, gbpContent]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .join("\n");
     const searchInfo = [addressResult, stationResult].filter(Boolean).join("\n");
     const industryList = Array.isArray(industries)
       ? industries.filter((value): value is string => typeof value === "string" && value.trim() !== "")
