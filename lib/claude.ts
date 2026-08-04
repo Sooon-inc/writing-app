@@ -53,19 +53,26 @@ function toReadableClaudeError(error: unknown): Error {
 
 export async function generateWriting(
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  options: {
+    maxAttempts?: number;
+    timeoutMs?: number;
+    maxTokens?: number;
+  } = {}
 ): Promise<string> {
-  const maxAttempts = 4;
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 4);
+  const timeoutMs = Math.max(1000, options.timeoutMs ?? 10 * 60 * 1000);
+  const maxTokens = Math.max(256, options.maxTokens ?? 8192);
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const message = await client.messages.create({
         model: "claude-sonnet-4-6",
-        max_tokens: 8192,
+        max_tokens: maxTokens,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
-      });
+      }, { timeout: timeoutMs });
 
       const content = message.content[0];
       if (content.type !== "text") {

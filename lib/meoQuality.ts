@@ -85,24 +85,39 @@ function extractJsonObject(raw: string): string {
 
 export async function reviewAndReviseMeo<T>(
   initialOutput: T,
-  evidence: string
+  evidence: string,
+  options: {
+    maxRevisionAttempts?: number;
+    recheckAfterRevision?: boolean;
+    generation?: {
+      maxAttempts?: number;
+      timeoutMs?: number;
+      maxTokens?: number;
+    };
+  } = {}
 ): Promise<{ output: T; review: MeoReport; attempts: number }> {
   let output = initialOutput;
   let attempts = 0;
+  const maxRevisionAttempts = Math.max(0, options.maxRevisionAttempts ?? 2);
+  const recheckAfterRevision = options.recheckAfterRevision ?? true;
   let review = parse<MeoReport>(await generateWriting(
     REVIEW_PROMPT,
-    `【根拠情報】\n${evidence}\n\n【生成結果】\n${JSON.stringify(output)}`
+    `【根拠情報】\n${evidence}\n\n【生成結果】\n${JSON.stringify(output)}`,
+    options.generation
   ));
 
-  while (attempts < 2 && (!review.passed || review.score < 85 || review.issues?.some((issue) => issue.severity !== "low"))) {
+  while (attempts < maxRevisionAttempts && (!review.passed || review.score < 85 || review.issues?.some((issue) => issue.severity !== "low"))) {
     attempts += 1;
     output = parse<T>(await generateWriting(
       REVISION_PROMPT,
-      `【根拠情報】\n${evidence}\n\n【監査結果】\n${JSON.stringify(review)}\n\n【修正対象JSON】\n${JSON.stringify(output)}`
+      `【根拠情報】\n${evidence}\n\n【監査結果】\n${JSON.stringify(review)}\n\n【修正対象JSON】\n${JSON.stringify(output)}`,
+      options.generation
     ));
+    if (!recheckAfterRevision) break;
     review = parse<MeoReport>(await generateWriting(
       REVIEW_PROMPT,
-      `【根拠情報】\n${evidence}\n\n【生成結果】\n${JSON.stringify(output)}`
+      `【根拠情報】\n${evidence}\n\n【生成結果】\n${JSON.stringify(output)}`,
+      options.generation
     ));
   }
 

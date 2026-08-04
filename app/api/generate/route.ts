@@ -14,6 +14,18 @@ import { jsonrepair } from "jsonrepair";
 
 export const maxDuration = 300;
 
+const MEO_PRIMARY_GENERATION_OPTIONS = {
+  maxAttempts: 1,
+  timeoutMs: 70_000,
+  maxTokens: 8192,
+} as const;
+
+const MEO_QUALITY_GENERATION_OPTIONS = {
+  maxAttempts: 1,
+  timeoutMs: 55_000,
+  maxTokens: 8192,
+} as const;
+
 type MeoServiceItem = {
   商品サービス名: string;
   商品カテゴリ: string;
@@ -62,6 +74,14 @@ function cleanJson(raw: string): string {
   return cleaned;
 }
 
+function compactSourceText(value: unknown, maxLength: number): string {
+  const text = String(value ?? "").trim();
+  if (text.length <= maxLength) return text;
+  const headLength = Math.floor(maxLength * 0.75);
+  const tailLength = maxLength - headLength;
+  return `${text.slice(0, headLength)}\n…（入力が長いため中略）…\n${text.slice(-tailLength)}`;
+}
+
 async function generateMeoProductDescriptions(input: {
   products: string[];
   existingServices: MeoServiceItem[];
@@ -85,7 +105,8 @@ async function generateMeoProductDescriptions(input: {
 【会社情報・ヒアリング】
 ${input.context || "情報なし"}
 
-上記の商品・サービスすべてについて、同じ順番で説明文JSONを作成してください。`
+上記の商品・サービスすべてについて、同じ順番で説明文JSONを作成してください。`,
+    MEO_PRIMARY_GENERATION_OPTIONS
   );
 
   const parsed = JSON.parse(jsonrepair(cleanJson(raw))) as { items?: MeoServiceDescriptionItem[] };
@@ -93,6 +114,7 @@ ${input.context || "情報なし"}
 }
 
 export async function POST(req: Request) {
+  const requestStartedAt = Date.now();
   const { type, hpContent, hearing, industries = [], products, gbpContent, gbpUrl } = await req.json();
 
   if (!type) {
@@ -102,6 +124,7 @@ export async function POST(req: Request) {
   let systemPrompt: string;
   let userPrompt: string;
   let meoEvidenceContext = "";
+  let meoProductContext = "";
 
   if (type === "meo") {
     // HP情報から店舗名を抽出
@@ -137,14 +160,30 @@ export async function POST(req: Request) {
       businessName,
     });
 
+    const compactHpContent = compactSourceText(hpContent, 8_000);
+    const compactHearing = compactSourceText(hearing, 18_000);
+    const compactGbpContent = compactSourceText(resolvedGbpContent, 6_000);
+    const compactSearchInfo = compactSourceText(searchInfo, 6_000);
+    const compactResearchInfo = compactSourceText(researchInfo, 12_000);
+
     systemPrompt = meoSystemPrompt;
-    userPrompt = meoUserPrompt(hpContent ?? "", hearing ?? "", products ?? [], searchInfo, resolvedGbpContent, researchInfo);
+    userPrompt = meoUserPrompt(
+      compactHpContent,
+      compactHearing,
+      products ?? [],
+      compactSearchInfo,
+      compactGbpContent,
+      compactResearchInfo
+    );
+    meoProductContext = [compactHpContent, compactGbpContent, compactHearing]
+      .filter(Boolean)
+      .join("\n\n");
     meoEvidenceContext = [
-      "【HP情報】", hpContent ?? "",
-      "【GBP・Places情報】", resolvedGbpContent,
-      "【補助検索情報】", searchInfo,
-      "【地域・業種調査】", researchInfo,
-      "【ヒアリング】", hearing ?? "",
+      "【HP情報】", compactHpContent,
+      "【GBP・Places情報】", compactGbpContent,
+      "【補助検索情報】", compactSearchInfo,
+      "【地域・業種調査】", compactResearchInfo,
+      "【ヒアリング】", compactHearing,
       "【入力業種】", industryList.join("、"),
       "【入力商品サービス】", Array.isArray(products) ? products.join("、") : "",
     ].join("\n");
@@ -161,7 +200,35 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await generateWriting(systemPrompt, userPrompt);
+    const filledProducts: string[] = type === "meo" && Array.isArray(products)
+      ? products.filter((product: unknown): product is string => typeof product === "string" && product.trim() !== "")
+      : [];
+
+    // MEO本文と商品説明は互いに独立して生成できるため並列実行する。
+    // 商品説明側が失敗しても本文側の初期出力へフォールバックする。
+    const productDescriptionsPromise: Promise<MeoServiceDescriptionItem[]> =
+      type === "meo" && filledProducts.length > 0
+        ? generateMeoProductDescriptions({
+            products: filledProducts,
+            existingServices: [],
+            context: meoProductContext,
+          }).catch((error) => {
+            console.warn(
+              "[meo] parallel product description generation failed; using primary output:",
+              error instanceof Error ? error.message : String(error)
+            );
+            return [];
+          })
+        : Promise.resolve([]);
+
+    const result = await generateWriting(
+      systemPrompt,
+      userPrompt,
+      type === "meo" ? MEO_PRIMARY_GENERATION_OPTIONS : undefined
+    );
+    if (type === "meo") {
+      console.log(`[meo] primary generation completed in ${Date.now() - requestStartedAt}ms`);
+    }
     // Strip markdown code block if present, then repair and parse
     const cleaned = result.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
     const parsed = JSON.parse(jsonrepair(cleaned));
@@ -170,7 +237,6 @@ export async function POST(req: Request) {
     // MEO: ユーザー入力の商品数を厳守し、説明文を項目ごとに個別生成（並列）
     if (type === "meo") {
       const claudeServices = (initialParsed["商品サービス"] ?? []) as MeoServiceItem[];
-      const filledProducts = (products ?? []).filter((p: string) => p.trim()) as string[];
 
       if (filledProducts.length > 0) {
         // Claudeの出力からカテゴリを名前一致 or インデックスで取得
@@ -179,17 +245,7 @@ export async function POST(req: Request) {
           ?? claudeServices[i]?.商品カテゴリ
           ?? "";
 
-        const context = [hpContent, gbpContent, hearing].filter(Boolean).join("\n\n");
-        let generatedDescriptions: MeoServiceDescriptionItem[] = [];
-        try {
-          generatedDescriptions = await generateMeoProductDescriptions({
-            products: filledProducts,
-            existingServices: claudeServices,
-            context,
-          });
-        } catch (error) {
-          console.warn("[meo] batch product description generation failed, falling back to initial output:", error instanceof Error ? error.message : String(error));
-        }
+        const generatedDescriptions = await productDescriptionsPromise;
 
         const getGenerated = (name: string, i: number): MeoServiceDescriptionItem | undefined =>
           generatedDescriptions.find((item) => item.商品サービス名 === name) ?? generatedDescriptions[i];
@@ -219,8 +275,15 @@ export async function POST(req: Request) {
       });
     }
 
-    const checked = await reviewAndReviseMeo(initialParsed, meoEvidenceContext);
+    const checked = await reviewAndReviseMeo(initialParsed, meoEvidenceContext, {
+      maxRevisionAttempts: 1,
+      recheckAfterRevision: false,
+      generation: MEO_QUALITY_GENERATION_OPTIONS,
+    });
     const output = ensureMeoOutput(checked.output);
+    console.log(
+      `[meo] generation and quality review completed in ${Date.now() - requestStartedAt}ms; revisions=${checked.attempts}`
+    );
     return NextResponse.json({
       output,
       qualityReview: checked.review,

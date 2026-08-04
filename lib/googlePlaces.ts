@@ -6,6 +6,19 @@
  */
 
 const PLACES_BASE = "https://maps.googleapis.com/maps/api/place";
+
+class PlacesApiDeniedError extends Error {
+  constructor() {
+    super("Google Places API request was denied");
+    this.name = "PlacesApiDeniedError";
+  }
+}
+
+function throwIfPlacesDenied(status?: string): void {
+  if (status === "REQUEST_DENIED" || status === "OVER_QUERY_LIMIT") {
+    throw new PlacesApiDeniedError();
+  }
+}
 // フル版フィールド（Contact・Atmosphere フィールドは課金対象の場合あり）
 const DETAIL_FIELDS_FULL = [
   "name",
@@ -137,8 +150,10 @@ async function findPlaceIdByCid(cid: string, apiKey: string): Promise<string> {
     const res = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
     const data = (await res.json()) as { result?: { place_id?: string }; status?: string };
     console.log("[places] CID lookup status:", data.status);
+    throwIfPlacesDenied(data.status);
     return data.result?.place_id ?? "";
-  } catch {
+  } catch (error) {
+    if (error instanceof PlacesApiDeniedError) throw error;
     return "";
   }
 }
@@ -176,9 +191,12 @@ async function findPlaceIdByText(
         status?: string;
       };
       console.log(`[places] text search "${q}" status:`, data.status, "candidates:", data.candidates?.length ?? 0);
+      throwIfPlacesDenied(data.status);
       const placeId = data.candidates?.[0]?.place_id;
       if (placeId) return placeId;
-    } catch {}
+    } catch (error) {
+      if (error instanceof PlacesApiDeniedError) throw error;
+    }
   }
   return "";
 }
@@ -213,6 +231,7 @@ async function fetchNearestStation(
       const res = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
       const data = (await res.json()) as NearbyResult;
       console.log(`[places] nearest station search ${type} status:`, data.status, "results:", data.results?.length ?? 0);
+      throwIfPlacesDenied(data.status);
 
       for (const result of data.results ?? []) {
         const stationLat = result.geometry?.location?.lat;
@@ -227,6 +246,7 @@ async function fetchNearestStation(
         });
       }
     } catch (e) {
+      if (e instanceof PlacesApiDeniedError) throw e;
       console.warn(`[places] nearest station search ${type} failed:`, e instanceof Error ? e.message : String(e));
     }
   }
@@ -265,12 +285,13 @@ async function fetchPlaceDetails(placeId: string, apiKey: string): Promise<Place
   // まずフル版で試行
   let data = await fetchDetails(DETAIL_FIELDS_FULL);
   console.log("[places] details(full) status:", data.status);
+  throwIfPlacesDenied(data.status);
 
-  // REQUEST_DENIED の場合は基本フィールドのみでリトライ
-  if (data.status === "REQUEST_DENIED") {
-    console.warn("[places] full fields denied, retrying with basic fields...");
+  // 一部フィールド制限時だけ基本フィールドでリトライする。
+  if (data.status && data.status !== "OK" && data.status !== "ZERO_RESULTS") {
     data = await fetchDetails(DETAIL_FIELDS_BASIC);
     console.log("[places] details(basic) status:", data.status);
+    throwIfPlacesDenied(data.status);
   }
 
   const r = data.result ?? {};
@@ -302,6 +323,8 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
 
   let url = mapsUrl.trim();
   if (!url) return "";
+  let fallbackName = "";
+  let fallbackLatLng: { lat: number; lng: number } | null = null;
 
   try {
     // 短縮 URL を展開
@@ -314,6 +337,8 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
     // 補助情報を抽出
     const latLng = extractLatLng(url);
     const name = extractNameFromUrl(url);
+    fallbackName = name;
+    fallbackLatLng = latLng;
     console.log("[places] name from URL:", name, "| latLng:", latLng);
 
     // place_id を取得（ChIJ → CID → テキスト検索 の順）
@@ -375,6 +400,14 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
       .filter(Boolean)
       .join("\n");
   } catch (e) {
+    if (e instanceof PlacesApiDeniedError) {
+      console.warn("[places] API denied; continuing with information extracted from the Maps URL");
+      return [
+        fallbackName ? `【店舗名】${fallbackName}` : "",
+        fallbackLatLng ? `【緯度】${fallbackLatLng.lat}` : "",
+        fallbackLatLng ? `【経度】${fallbackLatLng.lng}` : "",
+      ].filter(Boolean).join("\n");
+    }
     console.error("[places] error:", e instanceof Error ? e.message : String(e));
     return "";
   }
