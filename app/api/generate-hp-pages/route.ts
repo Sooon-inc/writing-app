@@ -35,10 +35,13 @@ async function extractSheetFields(
   sheet.eachRow((row, rn) => {
     const c2 = getCellText(row, 2);
     const c4 = getCellText(row, 4);
+    const c5 = getCellText(row, 5);
     const c8 = getCellText(row, 8);
     const c12 = getCellText(row, 12);
     const c13 = getCellText(row, 13);
-    const label = (c4 || c8 || "").trim();
+    // クラシックのサービス系シートは D 列が「必須/任意」、
+    // E 列が実際の項目名。固定ページでは従来どおり D/H 列を参照する。
+    const label = (c5 || c4 || c8 || "").trim();
     const section = c2.trim();
 
     if (

@@ -63,10 +63,17 @@ export async function POST(req: NextRequest) {
         pageThemes
       );
 
-  // hp-strong: シートごとに書き込み列を指定（デフォルトは H 列=8）
-  const fixedSheetColMap = project.type === "hp-strong" ? {
+  // テンプレートごとの本文入力列。クラシックは指定原本の空白列に合わせる。
+  const fixedSheetColMap: Record<string, number> | undefined = project.type === "hp-strong" ? {
     "トップ": 9,               // I 列
     "代表挨拶・スタッフ紹介": 7, // G 列
+  } : project.type === "hp-classic" ? {
+    "トップ": 9,       // I 列
+    "会社概要": 8,     // H 列
+    "当社について": 7, // G 列
+    "代表挨拶": 7,     // G 列
+    "よくある質問": 7, // G 列
+    "採用情報": 7,     // G 列
   } : undefined;
   applyHpOutputsToWorkbook(
     wb,
