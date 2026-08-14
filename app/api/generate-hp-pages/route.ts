@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
-import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
+import { HP_SITEMAPS, HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 import { generateWriting } from "@/lib/claude";
@@ -157,6 +157,27 @@ export async function POST(req: NextRequest) {
     const templatePath = HP_TEMPLATE_PATHS[project.type];
     if (!templatePath) {
       return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
+    }
+
+    // クライアントから送られたinstanceKeyとsheetNameを無条件に
+    // 信頼すると、古いUI状態や並列リクエストでA/Cが入れ替わる。
+    const fixedMatch = (HP_SITEMAPS[project.type] ?? []).some(
+      (page) => page.fixed && page.sheetName === sheetName && instanceKey === sheetName
+    );
+    let optionalMatch = false;
+    try {
+      const items = JSON.parse(project.sitemap ?? "[]") as Array<{ id?: string; sheetName?: string } | string>;
+      optionalMatch = items.some((item) =>
+        typeof item === "string"
+          ? item === instanceKey && item === sheetName
+          : item.id === instanceKey && item.sheetName === sheetName
+      );
+    } catch { /* invalid sitemap is rejected below */ }
+    if (!fixedMatch && !optionalMatch) {
+      return NextResponse.json(
+        { error: `ページ指定が最新のサイトマップと一致しません（${sheetName}）。画面を再読み込みして再度生成してください。` },
+        { status: 409 }
+      );
     }
 
   // GBP URL が Google Maps URL なら Places API で情報取得

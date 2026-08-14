@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
-import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
+import { HP_SITEMAPS, HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
 import { generateHpDirectoryMetadata } from "@/lib/hpDirectoryMetadata";
 import {
@@ -74,7 +74,10 @@ export async function POST(req: NextRequest) {
     sitemapItems,
     pageThemes,
     fixedSheetColMap,
-    directoryMetadata
+    directoryMetadata,
+    (HP_SITEMAPS[project.type] ?? [])
+      .filter((page) => page.fixed && page.sheetName)
+      .map((page) => page.sheetName!)
   );
 
   const buffer = await wb.xlsx.writeBuffer();

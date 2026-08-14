@@ -299,7 +299,8 @@ export function applyHpOutputsToWorkbook(
   sitemapItems: HpSitemapItem[],
   pageThemes: Record<string, string>,
   fixedSheetColMap?: Record<string, number>,
-  directoryMetadata: DirectoryMetadata[] = []
+  directoryMetadata: DirectoryMetadata[] = [],
+  fixedSheetNames?: string[]
 ): void {
   const findSheet = (name: string) =>
     wb.getWorksheet(name) ??
@@ -314,11 +315,16 @@ export function applyHpOutputsToWorkbook(
   const usedFinalNames = new Set<string>(); // 重複回避用
   const directWritten = new Set<string>();  // 固定ページとして直接書き込んだ元シート名
   const cloneSources = new Set<string>();   // 複製元として使った任意ページのシート名
+  const allowedFixedSheets = new Set((fixedSheetNames ?? []).map((name) => name.trim()));
 
   for (const [key, rowContents] of Object.entries(hpPageOutputs)) {
     const originalSheetName = instanceToSheet[key] ?? key;
     const isOptional = key in instanceToSheet;
     const theme = pageThemes[key] ?? "";
+
+    // 現在のサイトマップにない古い追加ページのキーを、固定ページと
+    // 誤認して別シート（例: サービスC）へ書き込まない。
+    if (!isOptional && fixedSheetNames && !allowedFixedSheets.has(key.trim())) continue;
 
     if (isOptional) {
       // シート名: テーマが設定されていればテーマ名、なければ元シート名

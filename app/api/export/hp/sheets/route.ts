@@ -4,7 +4,7 @@ import path from "path";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
-import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
+import { HP_SITEMAPS, HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
 import { type DriveOutputType, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
@@ -92,7 +92,10 @@ export async function POST(req: NextRequest) {
       sitemapItems,
       pageThemes,
       fixedSheetColMap,
-      directoryMetadata
+      directoryMetadata,
+      (HP_SITEMAPS[project.type] ?? [])
+        .filter((page) => page.fixed && page.sheetName)
+        .map((page) => page.sheetName!)
     );
     buffer = await wb.xlsx.writeBuffer();
   } catch (e: unknown) {

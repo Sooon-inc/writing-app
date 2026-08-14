@@ -540,7 +540,7 @@ export default function ProjectDetailPage() {
       await fetchWithTimeout(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), sitemap: JSON.stringify(sitemapItems), hpPageThemes: JSON.stringify(pageThemes) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
       const allOutputs: Record<string, Record<string | number, string>> = {};
@@ -627,7 +627,7 @@ export default function ProjectDetailPage() {
       await fetchWithTimeout(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), hpPageThemes: JSON.stringify(pageThemes) }),
+        body: JSON.stringify({ hearing, industries: JSON.stringify(industries.filter((industry) => industry.trim())), hpUrl, gbpUrl: gbpUrl.trim(), sitemap: JSON.stringify(sitemapItems), hpPageThemes: JSON.stringify(pageThemes) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
       // 既存の出力を引き継ぎ、追加ページの出力のみ上書き
@@ -1275,8 +1275,37 @@ export default function ProjectDetailPage() {
   }, [pendingOpenSheet, project]);
 
   const addSitemapItem = () => setSitemapItems((prev) => [...prev, { id: genId(), sheetName: "" }]);
-  const updateSitemapItem = (index: number, value: string) =>
-    setSitemapItems((prev) => prev.map((item, i) => (i === index ? { ...item, sheetName: value } : item)));
+  const updateSitemapItem = (index: number, value: string) => {
+    const target = sitemapItems[index];
+    if (!target || target.sheetName === value) return;
+
+    const nextItems = sitemapItems.map((item, i) =>
+      i === index ? { ...item, sheetName: value } : item
+    );
+    // 同じinstanceKeyに旧シートの文章が残ると、Aへ変更後もCの
+    // 文章をAとして表示／出力してしまう。種類変更時は必ず破棄する。
+    const nextOutputs = hpPageOutputs ? { ...hpPageOutputs } : null;
+    if (nextOutputs) delete nextOutputs[target.id];
+    const nextThemes = { ...pageThemes };
+    delete nextThemes[target.id];
+
+    setSitemapItems(nextItems);
+    setHpPageOutputs(nextOutputs);
+    setPageThemes(nextThemes);
+    void fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sitemap: JSON.stringify(nextItems),
+        hpPageOutputs: JSON.stringify(nextOutputs ?? {}),
+        hpPageThemes: JSON.stringify(nextThemes),
+      }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})) as { error?: string }).error || "保存に失敗しました");
+    }).catch((error) => {
+      setHpGenError(`ページ種類の変更保存に失敗しました: ${getErrorMessage(error)}`);
+    });
+  };
   const removeSitemapItem = (index: number) =>
     setSitemapItems((prev) => prev.filter((_, i) => i !== index));
 
