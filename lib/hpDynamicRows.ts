@@ -213,6 +213,21 @@ export function prepareHpDynamicRows(
   const used = definitions.filter((field) => rowContents[String(field.rn)] != null && rowContents[String(field.rn)] !== "");
   if (used.length === 0) return rowContents;
 
+  const staleLinkRows = new Set<number>();
+  for (const field of used) {
+    const sourceEnd = field.sourceEnd;
+    const sourceLabel = `${text(sheet.getRow(sourceEnd), 5)} ${text(sheet.getRow(sourceEnd), 8)}`;
+    const stored = String(rowContents[String(sourceEnd)] ?? "").trim();
+    if (
+      sourceLabel.includes("リンク先") &&
+      stored &&
+      !/^(?:\/|https?:\/\/|#|mailto:|tel:)/i.test(stored)
+    ) {
+      // 旧仕様で次の見出しが「リンク先」行へ漏れたデータを出力しない。
+      staleLinkRows.add(sourceEnd);
+    }
+  }
+
   const groups = new Map<string, HpDynamicField[]>();
   for (const field of used) {
     const key = `${field.section}\u0000${field.extraIndex}`;
@@ -240,6 +255,7 @@ export function prepareHpDynamicRows(
   const transformed: Record<string, string> = {};
   for (const [key, value] of Object.entries(rowContents)) {
     const rn = Number(key);
+    if (staleLinkRows.has(rn)) continue;
     if (byRn.has(rn)) {
       const actual = actualByVirtual.get(rn);
       if (actual) transformed[String(actual)] = value;
