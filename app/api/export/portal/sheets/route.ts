@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
-import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { uploadToGoogleSheets } from "@/lib/driveUpload";
 import { buildPortalWorkbook } from "@/lib/portalExcelBuilder";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       oauth2Client,
       `${projectName ?? "ポータル"}_Nexus-by-Homeヒアリングシート`,
       Buffer.from(buffer),
-      DRIVE_FOLDER_IDS.portal
+      "portal"
     );
     return NextResponse.json({ url: webViewLink });
   } catch (error) {

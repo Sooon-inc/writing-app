@@ -6,7 +6,7 @@ import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { applyHpOutputsToWorkbook, HpSitemapItem } from "@/lib/hpExportHelper";
-import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { type DriveOutputType, uploadToGoogleSheets } from "@/lib/driveUpload";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 import { generateHpDirectoryMetadata } from "@/lib/hpDirectoryMetadata";
 import {
@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
       oauth2Client,
       `${project.name}_HPヒアリングシート`,
       Buffer.from(buffer),
-      DRIVE_FOLDER_IDS.hp
+      project.type as DriveOutputType
     );
     return NextResponse.json({ url: webViewLink, warning });
   } catch (e: unknown) {

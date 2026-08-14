@@ -3,7 +3,7 @@ import * as ExcelJS from "exceljs";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
 import { buildMeoWorkbook } from "@/lib/meoExcelBuilder";
-import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { uploadToGoogleSheets } from "@/lib/driveUpload";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 
 export const maxDuration = 300;
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
       oauth2Client,
       `${projectName}_MEOヒアリングシート`,
       Buffer.from(buffer),
-      DRIVE_FOLDER_IDS.meo
+      "meo"
     );
     return NextResponse.json({ url: webViewLink });
   } catch (e: unknown) {

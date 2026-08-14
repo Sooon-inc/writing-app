@@ -7,12 +7,112 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 3000;
 const GOOGLE_API_TIMEOUT_MS = 60000;
 
-export const DRIVE_FOLDER_IDS = {
-  hp: process.env.GOOGLE_DRIVE_FOLDER_HP ?? "1k3YnO6CO1NUPkgBcbN5Z3aSjZ0-q0pkb",
-  meo: process.env.GOOGLE_DRIVE_FOLDER_MEO ?? "1B-veMXX_kjUPrPcK1wyFplj7Bv1fDeZT",
-  lp: process.env.GOOGLE_DRIVE_FOLDER_LP ?? "1gMItUDqvRScTRMGVeu-WVSvO6Hf1uxwu",
-  portal: process.env.GOOGLE_DRIVE_FOLDER_PORTAL ?? "1HkEJyt5RQdFqeKxjQOFzccx8ZpsJme89",
+export type DriveOutputType =
+  | "meo"
+  | "hp-strong"
+  | "hp-classic"
+  | "hp-beauty"
+  | "hp-recruit"
+  | "lp"
+  | "portal";
+
+export const DRIVE_ROOT_FOLDER_ID = "1mvLCkl37oJQBoQ0UqdvQ7h1YO4SOol2n";
+
+const DRIVE_FOLDER_CONFIG: Record<DriveOutputType, { name: string; id: string }> = {
+  meo: { name: "MEO", id: "18U890sUrU9-IdSvsNgJdtTKYtwEIAOoq" },
+  "hp-strong": { name: "ストロング", id: "1b9zGU9n6wnVhLnoIlrerkBaiwT25uUzm" },
+  "hp-classic": { name: "クラシック", id: "1Jyl5MtFadHhrticB4WCT5xW-KFGrxw3a" },
+  "hp-beauty": { name: "ビューティー", id: "1eIiSWZQtjIygDNTiZt6ENMO180_4r85V" },
+  "hp-recruit": { name: "リクルート", id: "1a8go47U00mHGtQlHTZSjNO_ZuRtAAMfg" },
+  lp: { name: "LP", id: "1wUAFyvkTRWN22aL4tRwF1KM4U0zezIH6" },
+  portal: { name: "ポータルサイト", id: "1lCOwGLBE1mamOFxM9GprMCp9sTgGwxQT" },
 } as const;
+
+export const DRIVE_FOLDER_IDS = Object.fromEntries(
+  Object.entries(DRIVE_FOLDER_CONFIG).map(([type, config]) => [type, config.id])
+) as Record<DriveOutputType, string>;
+
+const folderResolutionPromises = new Map<DriveOutputType, Promise<string>>();
+
+function escapeDriveQueryValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function findOrCreateOutputFolder(
+  auth: OAuth2Client,
+  outputType: DriveOutputType
+): Promise<string> {
+  const drive = google.drive({ version: "v3", auth });
+  const config = DRIVE_FOLDER_CONFIG[outputType];
+
+  try {
+    const metadata = await withTimeout(
+      drive.files.get({
+        fileId: config.id,
+        fields: "id,mimeType,trashed,parents",
+        supportsAllDrives: true,
+      }),
+      `Drive ${config.name} folder verification`
+    );
+    if (
+      metadata.data.id
+      && metadata.data.mimeType === "application/vnd.google-apps.folder"
+      && !metadata.data.trashed
+      && (metadata.data.parents ?? []).includes(DRIVE_ROOT_FOLDER_ID)
+    ) {
+      return metadata.data.id;
+    }
+  } catch (error) {
+    console.warn(`[drive] configured ${config.name} folder is unavailable; searching under root:`, extractErrorMessage(error));
+  }
+
+  const escapedName = escapeDriveQueryValue(config.name);
+  const escapedParent = escapeDriveQueryValue(DRIVE_ROOT_FOLDER_ID);
+  const existing = await withTimeout(
+    drive.files.list({
+      q: `'${escapedParent}' in parents and name = '${escapedName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: "files(id,name,createdTime)",
+      orderBy: "createdTime",
+      pageSize: 10,
+      spaces: "drive",
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    }),
+    `Drive ${config.name} folder search`
+  );
+  const existingId = existing.data.files?.find((file) => file.id)?.id;
+  if (existingId) return existingId;
+
+  const created = await withTimeout(
+    drive.files.create({
+      requestBody: {
+        name: config.name,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [DRIVE_ROOT_FOLDER_ID],
+      },
+      fields: "id",
+      supportsAllDrives: true,
+    }),
+    `Drive ${config.name} folder creation`
+  );
+  if (!created.data.id) throw new Error(`${config.name}フォルダの作成結果からIDを取得できませんでした`);
+  return created.data.id;
+}
+
+export function resolveDriveOutputFolder(
+  auth: OAuth2Client,
+  outputType: DriveOutputType
+): Promise<string> {
+  const cached = folderResolutionPromises.get(outputType);
+  if (cached) return cached;
+
+  const resolving = findOrCreateOutputFolder(auth, outputType).catch((error) => {
+    folderResolutionPromises.delete(outputType);
+    throw error;
+  });
+  folderResolutionPromises.set(outputType, resolving);
+  return resolving;
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -223,16 +323,18 @@ export async function uploadToGoogleSheets(
   auth: OAuth2Client,
   name: string,
   buffer: Buffer | ArrayBuffer,
-  folderId: string
+  outputType: DriveOutputType
 ): Promise<{ id: string; webViewLink: string; warning?: string }> {
   const drive = google.drive({ version: "v3", auth });
   const buf = toBuffer(buffer);
+  const folderId = await resolveDriveOutputFolder(auth, outputType);
+  const folderName = DRIVE_FOLDER_CONFIG[outputType].name;
 
   let lastError: unknown;
   let uploadedFile: { id: string; webViewLink: string } | undefined;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`Drive files.create attempt ${attempt} started:`, name);
+      console.log(`Drive files.create attempt ${attempt} started:`, name, `folder=${folderName}`);
       const file = await withTimeout(
         drive.files.create({
           requestBody: {

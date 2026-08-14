@@ -3,7 +3,7 @@ import * as ExcelJS from "exceljs";
 import path from "path";
 import { cookies } from "next/headers";
 import { google } from "googleapis";
-import { DRIVE_FOLDER_IDS, uploadToGoogleSheets } from "@/lib/driveUpload";
+import { uploadToGoogleSheets } from "@/lib/driveUpload";
 import { prisma } from "@/lib/prisma";
 import { getGoogleRedirectUri } from "@/lib/googleOAuth";
 import { applyLpOutputsToWorkbook } from "@/lib/lpExportHelper";
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
       oauth2Client,
       `${project.name}_LPヒアリングシート`,
       Buffer.from(buffer),
-      DRIVE_FOLDER_IDS.lp
+      "lp"
     );
     return NextResponse.json({ url: webViewLink, warning });
   } catch (e: unknown) {
