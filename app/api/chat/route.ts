@@ -6,11 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { formatLearningMemoriesForPrompt, listLearningMemories } from "@/lib/learningMemory";
 import { jsonrepair } from "jsonrepair";
-import {
-  BEAUTY_TOP_SECTION04_EXTRA_FIELDS,
-  beautyTopSection04ExtraPrompt,
-  isBeautyTopSheet,
-} from "@/lib/hpExtraRows";
+import { buildHpDynamicFields, hpDynamicRowsPrompt } from "@/lib/hpDynamicRows";
 import {
   DIRECTORY_OUTPUT_KEY,
   LP_DIRECTORY_DESCRIPTION_ROW,
@@ -83,7 +79,8 @@ function extractLpFieldMap(sheet: ExcelJS.Worksheet): FieldMap {
 
 async function formatOutputForPrompt(
   currentOutput: ChatOutput,
-  projectId: string
+  projectId: string,
+  requestText = ""
 ): Promise<string> {
   // MEO / Portal: フィールド名が既にある
   if (currentOutput.type === "meo" || currentOutput.type === "portal") {
@@ -140,6 +137,7 @@ async function formatOutputForPrompt(
 
   // テンプレートを1回だけ読み込み、必要なシートのフィールドマップを構築
   const fieldMaps: Record<string, FieldMap> = {};
+  const dynamicInstructions: string[] = [];
   const templatePath = HP_TEMPLATE_PATHS[project.type];
   if (templatePath) {
     try {
@@ -153,11 +151,19 @@ async function formatOutputForPrompt(
             wb.worksheets.find((s) => s.name.trim() === sheetName.trim());
           if (sheet) {
             fieldMaps[sheetName] = extractHpFieldMap(sheet);
-            if (isBeautyTopSheet(project.type, sheetName)) {
-              for (const field of BEAUTY_TOP_SECTION04_EXTRA_FIELDS) {
-                fieldMaps[sheetName].set(field.rn, { section: field.section, label: `${field.group} ${field.label}` });
-              }
+            const dynamicFields = buildHpDynamicFields(sheet);
+            for (const field of dynamicFields) {
+              fieldMaps[sheetName].set(field.rn, { section: field.section, label: `${field.group} ${field.label}` });
             }
+            const normalizedRequest = requestText.normalize("NFKC").replace(/[.\s・]/g, "").toLowerCase();
+            const requestedDynamicFields = /(追加|増や|足りな|個に|件に)/.test(normalizedRequest)
+              ? dynamicFields.filter((field) => {
+                  const section = field.section.normalize("NFKC").replace(/[.\s・]/g, "").toLowerCase();
+                  return normalizedRequest.includes(section);
+                })
+              : [];
+            const instruction = hpDynamicRowsPrompt(instanceKey, requestedDynamicFields);
+            if (instruction) dynamicInstructions.push(instruction);
           }
         }
       }
@@ -165,7 +171,7 @@ async function formatOutputForPrompt(
   }
 
   const hpOutput = currentOutput;
-  return Object.entries(hpOutput.data)
+  const content = Object.entries(hpOutput.data)
     .map(([key, rows]) => {
       if (key === DIRECTORY_OUTPUT_KEY) {
         const directoryLines = directoryRowsToItems(rows)
@@ -192,6 +198,9 @@ async function formatOutputForPrompt(
       return `【${key}${theme}】\n${rowLines}`;
     })
     .join("\n\n");
+  return dynamicInstructions.length > 0
+    ? `${content}\n\n${dynamicInstructions.join("\n\n")}`
+    : content;
 }
 
 // ── UpdatePayload 構築 ────────────────────────────────────────────────
@@ -340,7 +349,7 @@ export async function POST(req: NextRequest) {
     selectedTargets?: SelectedTarget[];
   };
 
-  const formattedOutput = await formatOutputForPrompt(currentOutput, projectId);
+  const formattedOutput = await formatOutputForPrompt(currentOutput, projectId, message);
   const project = currentOutput.type === "hp"
     ? await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
     : null;
@@ -394,17 +403,9 @@ export async function POST(req: NextRequest) {
       })()
     : "";
 
-  const hpAppendInstruction = currentOutput.type === "hp" && project?.type === "hp-beauty"
-    ? (() => {
-        const topKey = Object.keys(currentOutput.data).find((key) => key === "トップ") ?? "トップ";
-        return `\n${beautyTopSection04ExtraPrompt(topKey)}\n`;
-      })()
-    : "";
-
   const systemPrompt = `あなたは日本語のライティング修正アシスタントです。
 以下の生成済み${outputTypeLabel}コンテンツを参照し、ユーザーの修正依頼に日本語で丁寧に答えてください。
 ${targetInstruction}
-${hpAppendInstruction}
 【現在のコンテンツ】
 ${currentOutput.type === "meo" ? formatUnknownForPrompt(currentOutput.data) : formattedOutput}
 ${learningContext ? `\n【過去にユーザーが学習させた修正例】\n${learningContext}\n\n【学習例の使い方】\n- 学習例は、文体・言い換え方・削除/追加の判断基準として参考にすること\n- ただし、今回の修正対象・業種・文脈と矛盾する内容はそのまま流用しないこと\n- 固有名詞・数字・住所・サービス名は現在のコンテンツとユーザー指示を優先すること` : ""}

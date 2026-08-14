@@ -1,8 +1,5 @@
 import * as ExcelJS from "exceljs";
-import {
-  hasBeautyTopSection04ExtraRows,
-  prepareBeautyTopSection04ExtraRows,
-} from "@/lib/hpExtraRows";
+import { prepareHpDynamicRows } from "@/lib/hpDynamicRows";
 import type { DirectoryMetadata } from "@/lib/hpDirectoryMetadata";
 
 export interface HpSitemapItem {
@@ -275,9 +272,7 @@ function writeContent(
   rowContents: Record<string, string>,
   colIndex: number
 ): void {
-  const contents = sheet.name.trim() === "トップ" && hasBeautyTopSection04ExtraRows(rowContents)
-    ? prepareBeautyTopSection04ExtraRows(sheet, rowContents)
-    : rowContents;
+  const contents = prepareHpDynamicRows(sheet, rowContents);
 
   for (const [rowNumStr, value] of Object.entries(contents)) {
     if (!value) continue;

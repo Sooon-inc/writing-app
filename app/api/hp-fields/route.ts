@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
-import { BEAUTY_TOP_SECTION04_EXTRA_FIELDS, isBeautyTopSheet } from "@/lib/hpExtraRows";
+import { buildHpDynamicFields } from "@/lib/hpDynamicRows";
 
 function getCellText(row: ExcelJS.Row, colIndex: number): string {
   const cell = row.getCell(colIndex);
@@ -76,18 +76,18 @@ export async function GET(req: NextRequest) {
     fields.push({ rn, section, label, condition: c4, group: currentGroup });
   });
 
-  if (isBeautyTopSheet(type, sheetName)) {
-    const insertIndex = fields.findIndex((field) => field.rn > 51);
-    const extraFields = BEAUTY_TOP_SECTION04_EXTRA_FIELDS.map((field) => ({
-      rn: field.rn,
-      section: field.section,
-      label: field.label,
-      condition: "",
-      group: field.group,
-    }));
-    if (insertIndex >= 0) fields.splice(insertIndex, 0, ...extraFields);
-    else fields.push(...extraFields);
+  const sectionOrder = new Map<string, number>();
+  for (const field of fields) {
+    if (!sectionOrder.has(field.section)) sectionOrder.set(field.section, sectionOrder.size);
   }
+  for (const field of buildHpDynamicFields(sheet)) {
+    fields.push({ rn: field.rn, section: field.section, label: field.label, condition: field.condition, group: field.group });
+  }
+  fields.sort((a, b) =>
+    (sectionOrder.get(a.section) ?? 999) - (sectionOrder.get(b.section) ?? 999) ||
+    (a.rn >= 200000 ? 1 : 0) - (b.rn >= 200000 ? 1 : 0) ||
+    a.rn - b.rn
+  );
 
   return NextResponse.json({ fields });
 }
