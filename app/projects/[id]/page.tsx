@@ -705,7 +705,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleChatApply = async (updates: UpdatePayload) => {
-    const saveProjectPatch = async (payload: Record<string, string>) => {
+    const saveProjectPatch = async (payload: Record<string, string>): Promise<Project> => {
       const res = await fetch(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -715,12 +715,20 @@ export default function ProjectDetailPage() {
         const data = await res.json().catch(() => ({})) as { error?: string };
         throw new Error(data.error ?? "修正内容の保存に失敗しました");
       }
+      return await res.json() as Project;
     };
 
     if (updates.kind === "output") {
       const next = applyOutputDiff(output ?? {}, updates.diff);
-      await saveProjectPatch({ output: JSON.stringify(next) });
-      setOutput(next);
+      const serialized = JSON.stringify(next);
+      const saved = await saveProjectPatch({ output: serialized });
+      if (saved.output !== serialized) {
+        throw new Error("修正内容を保存しましたが、保存結果の照合に失敗しました");
+      }
+      const savedOutput = normalizeStoredOutput(saved.type, JSON.parse(saved.output));
+      if (!savedOutput) throw new Error("保存後の修正データを読み込めませんでした");
+      setOutput(savedOutput);
+      setProject(saved);
     } else if (updates.kind === "hp") {
       const next = { ...(hpPageOutputs ?? {}) };
       for (const [key, rows] of Object.entries(updates.diff)) {
@@ -734,8 +742,14 @@ export default function ProjectDetailPage() {
           ),
         };
       }
-      await saveProjectPatch({ hpPageOutputs: JSON.stringify(next) });
-      setHpPageOutputs(next);
+      const serialized = JSON.stringify(next);
+      const saved = await saveProjectPatch({ hpPageOutputs: serialized });
+      if (saved.hpPageOutputs !== serialized) {
+        throw new Error("HP修正内容を保存しましたが、保存結果の照合に失敗しました");
+      }
+      const savedOutput = JSON.parse(saved.hpPageOutputs) as Record<string, Record<string | number, string>>;
+      setHpPageOutputs(savedOutput);
+      setProject(saved);
     } else if (updates.kind === "lp") {
       const next = {
         ...(lpOutput ?? {}),
@@ -743,13 +757,19 @@ export default function ProjectDetailPage() {
           Object.entries(updates.diff).map(([r, v]) => [parseInt(r), v])
         ),
       };
-      setLpOutput(next);
       const existingHpOut = (() => {
         try { return JSON.parse(project?.hpPageOutputs ?? "{}") as Record<string, unknown>; }
         catch { return {}; }
       })();
-      await saveProjectPatch({ hpPageOutputs: JSON.stringify({ ...existingHpOut, LP: next }) });
-      setLpOutput(next);
+      const combined = { ...existingHpOut, LP: next };
+      const serialized = JSON.stringify(combined);
+      const saved = await saveProjectPatch({ hpPageOutputs: serialized });
+      if (saved.hpPageOutputs !== serialized) {
+        throw new Error("LP修正内容を保存しましたが、保存結果の照合に失敗しました");
+      }
+      const savedCombined = JSON.parse(saved.hpPageOutputs) as Record<string, Record<string | number, string>>;
+      setLpOutput(savedCombined.LP ?? next);
+      setProject(saved);
     }
   };
 

@@ -102,7 +102,21 @@ export default function ChatBot({
           selectedTargets,
         }),
       });
-      const data = await res.json() as { reply: string; updates?: UpdatePayload | null };
+      const data = await res.json().catch(() => ({})) as {
+        reply?: string;
+        updates?: UpdatePayload | null;
+        hasChanges?: boolean;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "修正内容の作成に失敗しました");
+      }
+      if (!data.reply) {
+        throw new Error("AIの回答を取得できませんでした");
+      }
+      if (data.hasChanges && !data.updates) {
+        throw new Error("修正内容は作成されましたが、反映データを取得できませんでした");
+      }
       const assistantMessage: Message = {
         role: "assistant",
         content: data.reply,
@@ -133,10 +147,14 @@ export default function ChatBot({
           setApplying(null);
         }
       }
-    } catch {
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "エラーが発生しました。もう一度お試しください。", updates: null },
+        {
+          role: "assistant",
+          content: error instanceof Error ? error.message : "エラーが発生しました。もう一度お試しください。",
+          updates: null,
+        },
       ]);
     } finally {
       setSending(false);
@@ -145,12 +163,23 @@ export default function ChatBot({
 
   const handleApply = async (msgIndex: number, updates: UpdatePayload) => {
     setApplying(msgIndex);
-    await onApply(updates);
-    setMessages((prev) =>
-      prev.map((m, i) => (i === msgIndex ? { ...m, applied: true } : m))
-    );
-    setApplying(null);
-    onClearTargets?.();
+    try {
+      await onApply(updates);
+      setMessages((prev) =>
+        prev.map((m, i) => (i === msgIndex ? { ...m, applied: true, applyError: "" } : m))
+      );
+      onClearTargets?.();
+    } catch (error) {
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === msgIndex
+            ? { ...m, applyError: error instanceof Error ? error.message : "修正の反映に失敗しました" }
+            : m
+        )
+      );
+    } finally {
+      setApplying(null);
+    }
   };
 
   const openLearningModal = (msgIndex: number, msg: Message) => {
@@ -392,7 +421,7 @@ export default function ChatBot({
                       </div>
                       {msg.applied ? (
                         <div className="space-y-2">
-                          <p className="text-xs text-green-600 font-medium">✓ 適用済み</p>
+                          <p className="text-xs text-green-600 font-medium">✓ 反映・保存済み</p>
                           {msg.learned ? (
                             <p className="rounded-lg bg-sky-50 px-2 py-1.5 text-xs font-medium text-sky-700">
                               ✓ 今回の修正を学習済み

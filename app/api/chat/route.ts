@@ -206,16 +206,58 @@ function buildUpdatePayload(diff: Record<string, unknown>, outputType: string): 
         );
       }
     }
-    return { kind: "hp", diff: hpDiff };
+    return Object.keys(hpDiff).length > 0 ? { kind: "hp", diff: hpDiff } : null;
   }
   if (outputType === "lp") {
     const lpDiff: Record<string, string> = {};
     for (const [k, v] of Object.entries(diff)) {
       lpDiff[k] = String(v ?? "");
     }
-    return { kind: "lp", diff: lpDiff };
+    return Object.keys(lpDiff).length > 0 ? { kind: "lp", diff: lpDiff } : null;
   }
-  return { kind: "output", diff };
+  return Object.keys(diff).length > 0 ? { kind: "output", diff } : null;
+}
+
+type CorrectionToolInput = {
+  reply?: unknown;
+  has_changes?: unknown;
+  diff?: unknown;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasPath(value: Record<string, unknown>, path: string): boolean {
+  if (Object.prototype.hasOwnProperty.call(value, path)) return true;
+  const parts = path.split(".").filter(Boolean);
+  let current: unknown = value;
+  for (const part of parts) {
+    if (!isRecord(current) || !Object.prototype.hasOwnProperty.call(current, part)) return false;
+    current = current[part];
+  }
+  return parts.length > 0;
+}
+
+function missingSelectedTargets(updates: UpdatePayload | null, targets: SelectedTarget[]): string[] {
+  if (targets.length === 0) return [];
+  return targets.filter((target) => {
+    if (!updates) return true;
+    if (updates.kind === "hp") {
+      if (!target.instanceKey || typeof target.rn !== "number") return true;
+      return !Object.prototype.hasOwnProperty.call(updates.diff[target.instanceKey] ?? {}, String(target.rn));
+    }
+    if (updates.kind === "lp") {
+      return typeof target.rn !== "number"
+        || !Object.prototype.hasOwnProperty.call(updates.diff, String(target.rn));
+    }
+    return !target.fieldKey || !hasPath(updates.diff, target.fieldKey);
+  }).map((target) => target.displayText);
+}
+
+function looksLikeCorrectionRequest(message: string, targets: SelectedTarget[]): boolean {
+  if (targets.length > 0) return true;
+  return /修正|変更|書き換|言い換|短く|長く|追加|追記|削除|置き換|反映|整え|してください|してほしい/.test(message);
 }
 
 function extractUpdateJsonBlock(text: string): { reply: string; diff: Record<string, unknown> | null } {
@@ -367,14 +409,13 @@ ${hpAppendInstruction}
 ${currentOutput.type === "meo" ? formatUnknownForPrompt(currentOutput.data) : formattedOutput}
 ${learningContext ? `\n【過去にユーザーが学習させた修正例】\n${learningContext}\n\n【学習例の使い方】\n- 学習例は、文体・言い換え方・削除/追加の判断基準として参考にすること\n- ただし、今回の修正対象・業種・文脈と矛盾する内容はそのまま流用しないこと\n- 固有名詞・数字・住所・サービス名は現在のコンテンツとユーザー指示を優先すること` : ""}
 
-【修正がある場合のルール】
-- 回答の末尾に、必ず以下の形式の更新JSONブロックを含めること:
-\`\`\`json:update
-{ ... }
-\`\`\`
+【修正データのルール】
 - ${updateFormat}
-- 修正不要な場合や質問だけの場合は、updateブロックを含めないこと
-- updateブロックには修正箇所のみ含め、変更なしの項目は含めないこと`;
+- 修正依頼では has_changes=true とし、diffへ実際に保存する修正箇所を必ず含めること
+- 選択された対象がある場合は、対象を1件も漏らさずdiffへ含めること
+- 質問への回答だけで修正が不要な場合のみ has_changes=false、diff={} とすること
+- 「修正しました」「変更しました」と回答する場合、diffを空にすることは禁止
+- diffには修正箇所のみ含め、変更なしの項目は含めないこと`;
 
   const messages: Anthropic.MessageParam[] = [
     ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
@@ -386,15 +427,78 @@ ${learningContext ? `\n【過去にユーザーが学習させた修正例】\n$
     max_tokens: 4096,
     system: systemPrompt,
     messages,
+    tools: [{
+      name: "submit_correction",
+      description: "修正アシスタントの回答と、アプリへ保存する構造化された更新差分を確定する",
+      input_schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          reply: {
+            type: "string",
+            description: "ユーザーへ表示する簡潔な日本語の回答",
+          },
+          has_changes: {
+            type: "boolean",
+            description: "コンテンツを修正する場合はtrue、質問回答だけの場合はfalse",
+          },
+          diff: {
+            type: "object",
+            description: `アプリへ保存する更新差分。${updateFormat}`,
+            additionalProperties: true,
+          },
+        },
+        required: ["reply", "has_changes", "diff"],
+      },
+    }],
+    tool_choice: { type: "tool", name: "submit_correction" },
   });
 
-  const text = (msg.content[0] as { type: string; text: string }).text;
-  const extracted = extractUpdateJsonBlock(text);
-  const reply = extracted.reply;
+  const toolUse = msg.content.find((block) => block.type === "tool_use" && block.name === "submit_correction");
+  const toolInput = toolUse?.type === "tool_use" && isRecord(toolUse.input)
+    ? toolUse.input as CorrectionToolInput
+    : null;
+  const fallbackText = msg.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.type === "text" ? block.text : "")
+    .join("\n")
+    .trim();
+  const fallback = extractUpdateJsonBlock(fallbackText);
+  const reply = typeof toolInput?.reply === "string" && toolInput.reply.trim()
+    ? toolInput.reply.trim()
+    : fallback.reply || "回答を作成しました。";
+  const hasChanges = typeof toolInput?.has_changes === "boolean"
+    ? toolInput.has_changes
+    : !!fallback.diff;
+  const diff = isRecord(toolInput?.diff) ? toolInput.diff : fallback.diff;
   let updates: UpdatePayload | null = null;
-  if (extracted.diff) {
-    updates = buildUpdatePayload(extracted.diff, currentOutput.type);
+  if (diff) {
+    updates = buildUpdatePayload(diff, currentOutput.type);
   }
 
-  return NextResponse.json({ reply, updates });
+  const correctionRequested = looksLikeCorrectionRequest(message, targets);
+  if ((hasChanges || correctionRequested) && !updates) {
+    console.error(`[chat] correction diff missing; type=${currentOutput.type}; targets=${targets.length}`);
+    return NextResponse.json(
+      { error: "AIは修正内容を作成しましたが、反映データを取得できませんでした。もう一度実行してください。" },
+      { status: 422 }
+    );
+  }
+
+  const missingTargets = missingSelectedTargets(updates, targets);
+  if (missingTargets.length > 0) {
+    console.error(
+      `[chat] selected targets missing from diff; type=${currentOutput.type}; missing=${missingTargets.length}`
+    );
+    return NextResponse.json(
+      { error: `選択した${missingTargets.length}項目の修正データが不足したため、未反映のまま停止しました。もう一度実行してください。` },
+      { status: 422 }
+    );
+  }
+
+  console.log(
+    `[chat] structured correction ready; type=${currentOutput.type}; hasChanges=${hasChanges}; `
+    + `targets=${targets.length}; updates=${updates ? "yes" : "no"}`
+  );
+  return NextResponse.json({ reply, updates, hasChanges });
 }
