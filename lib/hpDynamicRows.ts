@@ -105,13 +105,102 @@ function cloneValue(value: ExcelJS.CellValue): ExcelJS.CellValue {
   return JSON.parse(JSON.stringify(value)) as ExcelJS.CellValue;
 }
 
-function copyRow(source: ExcelJS.Row, target: ExcelJS.Row): void {
-  target.height = source.height;
-  source.eachCell({ includeEmpty: true }, (cell, col) => {
-    const dest = target.getCell(col);
-    dest.value = cloneValue(cell.value);
-    dest.style = JSON.parse(JSON.stringify(cell.style));
+type MergeRange = { top: number; left: number; bottom: number; right: number };
+
+function mergeRanges(sheet: ExcelJS.Worksheet): MergeRange[] {
+  // ExcelJSは結合一覧を公開APIで返さないため、読み込み済みのモデルを使う。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const merges = Object.values((sheet as any)._merges ?? {}) as Array<{ model: MergeRange }>;
+  return merges.map((merge) => ({ ...merge.model }));
+}
+
+function rangeAddress(range: MergeRange): string {
+  const col = (value: number) => {
+    let result = "";
+    for (let n = value; n > 0; n = Math.floor((n - 1) / 26)) {
+      result = String.fromCharCode(65 + ((n - 1) % 26)) + result;
+    }
+    return result;
+  };
+  return `${col(range.left)}${range.top}:${col(range.right)}${range.bottom}`;
+}
+
+type RowSnapshot = {
+  height?: number;
+  cells: Array<{ col: number; value: ExcelJS.CellValue; style: Partial<ExcelJS.Style> }>;
+};
+
+function snapshotRows(sheet: ExcelJS.Worksheet, start: number, end: number): RowSnapshot[] {
+  const rows: RowSnapshot[] = [];
+  for (let rn = start; rn <= end; rn += 1) {
+    const row = sheet.getRow(rn);
+    const cells: RowSnapshot["cells"] = [];
+    row.eachCell({ includeEmpty: true }, (cell, col) => {
+      const isMergeSlave = cell.isMerged && cell.master?.address !== cell.address;
+      cells.push({
+        col,
+        // 結合スレーブはmasterの値を返すため、複製するとD〜Gなど
+        // 全セルに同じ文字が展開される。値はmasterだけ保持する。
+        value: isMergeSlave ? null : cloneValue(cell.value),
+        style: JSON.parse(JSON.stringify(cell.style)),
+      });
+    });
+    rows.push({ height: row.height, cells });
+  }
+  return rows;
+}
+
+function insertClonedBlock(
+  sheet: ExcelJS.Worksheet,
+  sourceStart: number,
+  sourceEnd: number,
+  insertAt: number
+): void {
+  const count = sourceEnd - sourceStart + 1;
+  const rows = snapshotRows(sheet, sourceStart, sourceEnd);
+  const merges = mergeRanges(sheet);
+
+  // spliceRowsは結合セルがある場合の挿入を安定して扱えない。
+  // 一度解除し、挿入後に元の結合と複製ブロックの結合を再構築する。
+  for (const merge of merges) sheet.unMergeCells(rangeAddress(merge));
+  sheet.spliceRows(insertAt, 0, ...Array.from({ length: count }, () => []));
+
+  rows.forEach((snapshot, offset) => {
+    const row = sheet.getRow(insertAt + offset);
+    if (snapshot.height != null) row.height = snapshot.height;
+    for (const cell of snapshot.cells) {
+      const target = row.getCell(cell.col);
+      target.value = cell.value;
+      target.style = cell.style;
+    }
   });
+
+  for (const merge of merges) {
+    const shifted = { ...merge };
+    if (merge.top >= insertAt) {
+      shifted.top += count;
+      shifted.bottom += count;
+    } else if (
+      merge.bottom >= insertAt ||
+      // 挿入点の直前で終わるセクション名の縦結合は、追加グループも
+      // 同じセクションに含むため下端を延長する。
+      (merge.bottom === insertAt - 1 && merge.top < sourceStart)
+    ) {
+      // セクション全体をまたぐ縦結合は、追加行分だけ下端を延ばす。
+      shifted.bottom += count;
+    }
+    sheet.mergeCells(rangeAddress(shifted));
+  }
+
+  for (const merge of merges) {
+    if (merge.top < sourceStart || merge.bottom > sourceEnd) continue;
+    sheet.mergeCells(rangeAddress({
+      top: insertAt + merge.top - sourceStart,
+      bottom: insertAt + merge.bottom - sourceStart,
+      left: merge.left,
+      right: merge.right,
+    }));
+  }
 }
 
 /** 仮想行を同じセクション末尾の実行に変換し、書式付きで行を挿入する。 */
@@ -140,10 +229,7 @@ export function prepareHpDynamicRows(
     const insertShift = insertedAt.filter((item) => item.at <= def.insertAt).reduce((sum, item) => sum + item.count, 0);
     const sourceStart = def.sourceStart + sourceShift;
     const insertAt = def.insertAt + insertShift;
-    sheet.spliceRows(insertAt, 0, ...Array.from({ length: blockSize }, () => []));
-    for (let offset = 0; offset < blockSize; offset += 1) {
-      copyRow(sheet.getRow(sourceStart + offset), sheet.getRow(insertAt + offset));
-    }
+    insertClonedBlock(sheet, sourceStart, sourceStart + blockSize - 1, insertAt);
     const header = sheet.getRow(insertAt);
     header.getCell(4).value = def.group;
     header.getCell(5).value = def.group;
