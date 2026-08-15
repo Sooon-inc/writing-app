@@ -5,10 +5,29 @@ import { generateWriting } from "@/lib/claude";
 import { portalSystemPrompt, portalUserPrompt } from "@/lib/templates/portal";
 import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { jsonrepair } from "jsonrepair";
-import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
+import { reviewAndReviseMarketingJson, type QualityLoopResult } from "@/lib/contentQuality";
 
 // Next.js ルートハンドラのタイムアウトを延長（Vercel 対応）
 export const maxDuration = 300;
+
+// ポータルは項目数が多く、生成後の品質処理を無制限に繰り返すと
+// ブラウザの300秒待機上限を超える。生成・確認・修正をそれぞれ1回に制限する。
+const PORTAL_GENERATION_OPTIONS = {
+  maxAttempts: 1,
+  timeoutMs: 110_000,
+  maxTokens: 8192,
+} as const;
+const PORTAL_QUALITY_TIMEOUT_MS = 105_000;
+
+function withHardTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
 
 interface SNSInput {
   instagram?: string;
@@ -165,7 +184,7 @@ async function generatePortalContent(inputData: {
 }): Promise<Record<string, unknown>> {
   console.log("[portal] generating content via Claude...");
   const userPrompt = portalUserPrompt(inputData);
-  const raw = await generateWriting(portalSystemPrompt, userPrompt);
+  const raw = await generateWriting(portalSystemPrompt, userPrompt, PORTAL_GENERATION_OPTIONS);
 
   if (!raw || !raw.trim()) {
     throw new Error("Claude returned empty response");
@@ -244,9 +263,39 @@ export async function POST(req: NextRequest) {
 
     // ② 文章生成 → 校正チェック → 必要に応じて修正
     const generatedOutput = await generatePortalContent(inputData);
-    const checked = await reviewAndReviseMarketingJson(generatedOutput, {
-      contentType: "ポータルサイト",
-    });
+    console.log("[portal] quality review started");
+    let checked: QualityLoopResult<Record<string, unknown>>;
+    try {
+      checked = await withHardTimeout(
+        reviewAndReviseMarketingJson(generatedOutput, {
+          contentType: "ポータルサイト",
+          maxRevisionAttempts: 1,
+          reviewMaxChars: 14_000,
+          reviewRequestOptions: { maxAttempts: 1, timeoutMs: 35_000, maxTokens: 2_400 },
+          revisionRequestOptions: { maxAttempts: 1, timeoutMs: 60_000, maxTokens: 8_192 },
+          // 修正指示自体がレビュー結果に基づくため、ポータルでは再レビューを省略して
+          // 生成リクエストが待機上限を超えないようにする。
+          verifyAfterRevision: false,
+        }),
+        PORTAL_QUALITY_TIMEOUT_MS,
+        "ポータル原稿の品質確認が時間内に完了しませんでした"
+      );
+      console.log(`[portal] quality review complete: attempts=${checked.attempts}`);
+    } catch (qualityError) {
+      // 原稿生成済みの場合は、品質確認の一時障害で原稿そのものを失わせない。
+      const message = qualityError instanceof Error ? qualityError.message : String(qualityError);
+      console.error("[portal] quality review failed; saving generated output:", message);
+      checked = {
+        output: generatedOutput,
+        attempts: 0,
+        review: {
+          ai_likeness_score: 0,
+          overall_verdict: "needs_revision" as const,
+          summary: `原稿は生成済みです。品質確認は一時的に完了しなかったため、編集画面で内容をご確認ください。(${message})`,
+          checks: [],
+        },
+      };
+    }
     const output = checked.output;
     const nearestStation = extractTaggedValue(inputData.gbpContent, "最寄り駅");
     if (nearestStation && isMissingValue(output["最寄りの駅"])) {

@@ -87,6 +87,12 @@ function extractLatLng(url: string): { lat: number; lng: number } | null {
   return null;
 }
 
+/** URL以外の案内文を含めて貼り付けた場合も、最初のURLだけを利用する。 */
+function normalizeMapsUrl(raw: string): string {
+  const match = raw.trim().match(/https?:\/\/[^\s<>"']+/i);
+  return match?.[0]?.replace(/[),。]$/, "") ?? raw.trim();
+}
+
 function toRadians(value: number): number {
   return (value * Math.PI) / 180;
 }
@@ -321,7 +327,7 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
     return "";
   }
 
-  let url = mapsUrl.trim();
+  let url = normalizeMapsUrl(mapsUrl);
   if (!url) return "";
   let fallbackName = "";
   let fallbackLatLng: { lat: number; lng: number } | null = null;
@@ -347,7 +353,12 @@ export async function getPlaceInfoFromMapsUrl(mapsUrl: string): Promise<string> 
 
     if (!placeId) {
       // ?cid= パラメータを確認
-      const cidParam = new URL(url).searchParams.get("cid");
+      let cidParam = "";
+      try {
+        cidParam = new URL(url).searchParams.get("cid") ?? "";
+      } catch {
+        console.warn("[places] invalid Maps URL after normalization");
+      }
       if (cidParam) {
         console.log("[places] cid param:", cidParam);
         placeId = await findPlaceIdByCid(cidParam, apiKey);

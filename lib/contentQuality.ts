@@ -28,6 +28,12 @@ export interface QualityLoopResult<T> {
   attempts: number;
 }
 
+type WritingRequestOptions = {
+  maxAttempts?: number;
+  timeoutMs?: number;
+  maxTokens?: number;
+};
+
 const REVIEW_SYSTEM_PROMPT = `あなたは日本語のWebマーケティング文章（ホームページ・ランディングページの訴求文）を専門に校正する編集者です。
 渡された記事全文を読み、「AIが生成した不自然さ」と「訴求文として機能しているか」を、以下のチェック項目に沿って判定してください。
 
@@ -160,6 +166,14 @@ function objectToArticleText(value: unknown, path = ""): string {
   return "";
 }
 
+/** 大きな出力でもレビュー要求が過度に膨らまないよう、先頭と末尾を残して要約する。 */
+function compactArticleText(value: string, maxChars?: number): string {
+  if (!maxChars || value.length <= maxChars) return value;
+  const head = Math.floor(maxChars * 0.7);
+  const tail = maxChars - head;
+  return `${value.slice(0, head)}\n…（長文のため中略）…\n${value.slice(-tail)}`;
+}
+
 function mergeNonTextValues<T>(original: T, revised: unknown): T {
   if (typeof original === "string") {
     if (original.trim() === "") return original as T;
@@ -181,11 +195,15 @@ function mergeNonTextValues<T>(original: T, revised: unknown): T {
   return original;
 }
 
-export async function reviewMarketingCopy(articleText: string): Promise<QualityReport> {
-  const targetText = articleText.trim() || "（文章なし）";
+export async function reviewMarketingCopy(
+  articleText: string,
+  options?: { maxChars?: number; requestOptions?: WritingRequestOptions }
+): Promise<QualityReport> {
+  const targetText = compactArticleText(articleText.trim() || "（文章なし）", options?.maxChars);
   const raw = await generateWriting(
     REVIEW_SYSTEM_PROMPT,
-    `以下の記事全文を校正チェックしてください。\n\n【記事全文】\n${targetText}`
+    `以下の記事全文を校正チェックしてください。\n\n【記事全文】\n${targetText}`,
+    options?.requestOptions
   );
   return normalizeReport(parseJsonObject<QualityReport>(raw));
 }
@@ -195,11 +213,19 @@ export async function reviewAndReviseMarketingJson<T>(
   options?: {
     contentType?: string;
     maxRevisionAttempts?: number;
+    reviewMaxChars?: number;
+    reviewRequestOptions?: WritingRequestOptions;
+    revisionRequestOptions?: WritingRequestOptions;
+    verifyAfterRevision?: boolean;
   }
 ): Promise<QualityLoopResult<T>> {
   const maxRevisionAttempts = options?.maxRevisionAttempts ?? 2;
   let output = initialOutput;
-  let review = await reviewMarketingCopy(objectToArticleText(output));
+  const reviewOptions = {
+    maxChars: options?.reviewMaxChars,
+    requestOptions: options?.reviewRequestOptions,
+  };
+  let review = await reviewMarketingCopy(objectToArticleText(output), reviewOptions);
   let attempts = 0;
 
   while (attempts < maxRevisionAttempts && shouldRevise(review)) {
@@ -214,12 +240,15 @@ ${JSON.stringify(output, null, 2)}
 【校正チェック結果】
 ${JSON.stringify(review, null, 2)}
 
-校正チェックで hit:true になった項目を改善し、同じキー構造のJSONのみを返してください。`
+校正チェックで hit:true になった項目を改善し、同じキー構造のJSONのみを返してください。`,
+      options?.revisionRequestOptions
     );
 
     const revised = parseJsonObject<unknown>(raw);
     output = mergeNonTextValues(output, revised);
-    review = await reviewMarketingCopy(objectToArticleText(output));
+    if (options?.verifyAfterRevision !== false) {
+      review = await reviewMarketingCopy(objectToArticleText(output), reviewOptions);
+    }
   }
 
   return { output, review, attempts };
