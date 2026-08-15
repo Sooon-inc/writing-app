@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { scrapeUrl } from "@/lib/scraper";
 import { generateWriting } from "@/lib/claude";
@@ -152,6 +152,20 @@ function isMissingValue(value: unknown): boolean {
   return text === "" || text === "記載なし" || text === "なし" || text === "-";
 }
 
+function enrichPortalOutput(
+  output: Record<string, unknown>,
+  gbpContent: string,
+  mapIframe: string
+): Record<string, unknown> {
+  const next = { ...output };
+  const nearestStation = extractTaggedValue(gbpContent, "最寄り駅");
+  if (nearestStation && isMissingValue(next["最寄りの駅"])) {
+    next["最寄りの駅"] = nearestStation;
+  }
+  if (mapIframe) next["GoogleMap用住所"] = mapIframe;
+  return next;
+}
+
 /** 入力データを収集して1つのコンテキストにまとめる */
 async function collectInputData(
   hpUrl: string,
@@ -261,61 +275,52 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ② 文章生成 → 校正チェック → 必要に応じて修正
+    // ② まず原稿を保存して返す。品質確認を同期で待つと、ポータルの多項目JSONでは
+    // Vercel/ブラウザの待機上限を超えて「Failed to fetch」になるため、後段へ分離する。
     const generatedOutput = await generatePortalContent(inputData);
-    console.log("[portal] quality review started");
-    let checked: QualityLoopResult<Record<string, unknown>>;
-    try {
-      checked = await withHardTimeout(
-        reviewAndReviseMarketingJson(generatedOutput, {
-          contentType: "ポータルサイト",
-          maxRevisionAttempts: 1,
-          reviewMaxChars: 14_000,
-          reviewRequestOptions: { maxAttempts: 1, timeoutMs: 35_000, maxTokens: 2_400 },
-          revisionRequestOptions: { maxAttempts: 1, timeoutMs: 60_000, maxTokens: 8_192 },
-          // 修正指示自体がレビュー結果に基づくため、ポータルでは再レビューを省略して
-          // 生成リクエストが待機上限を超えないようにする。
-          verifyAfterRevision: false,
-        }),
-        PORTAL_QUALITY_TIMEOUT_MS,
-        "ポータル原稿の品質確認が時間内に完了しませんでした"
-      );
-      console.log(`[portal] quality review complete: attempts=${checked.attempts}`);
-    } catch (qualityError) {
-      // 原稿生成済みの場合は、品質確認の一時障害で原稿そのものを失わせない。
-      const message = qualityError instanceof Error ? qualityError.message : String(qualityError);
-      console.error("[portal] quality review failed; saving generated output:", message);
-      checked = {
-        output: generatedOutput,
-        attempts: 0,
-        review: {
-          ai_likeness_score: 0,
-          overall_verdict: "needs_revision" as const,
-          summary: `原稿は生成済みです。品質確認は一時的に完了しなかったため、編集画面で内容をご確認ください。(${message})`,
-          checks: [],
-        },
-      };
-    }
-    const output = checked.output;
-    const nearestStation = extractTaggedValue(inputData.gbpContent, "最寄り駅");
-    if (nearestStation && isMissingValue(output["最寄りの駅"])) {
-      output["最寄りの駅"] = nearestStation;
-    }
-    if (inputData.mapIframe) {
-      output["GoogleMap用住所"] = inputData.mapIframe;
-    }
-
-    // ③ 生成結果を DB に保存
+    const output = enrichPortalOutput(generatedOutput, inputData.gbpContent, inputData.mapIframe ?? "");
     await prisma.project.update({
       where: { id: projectId },
       data: { output: JSON.stringify(output) },
     });
 
+    // ③ 応答後に品質確認・必要時の修正を実行し、完了時だけ保存内容を上書きする。
+    // after() はクライアントへの応答を待たせないため、長い校正処理でも生成画面を止めない。
+    after(async () => {
+      console.log("[portal] background quality review started");
+      try {
+        const checked: QualityLoopResult<Record<string, unknown>> = await withHardTimeout(
+          reviewAndReviseMarketingJson(output, {
+            contentType: "ポータルサイト",
+            maxRevisionAttempts: 1,
+            reviewMaxChars: 14_000,
+            reviewRequestOptions: { maxAttempts: 1, timeoutMs: 35_000, maxTokens: 2_400 },
+            revisionRequestOptions: { maxAttempts: 1, timeoutMs: 60_000, maxTokens: 8_192 },
+            verifyAfterRevision: false,
+          }),
+          PORTAL_QUALITY_TIMEOUT_MS,
+          "ポータル原稿の品質確認が時間内に完了しませんでした"
+        );
+        const reviewedOutput = enrichPortalOutput(
+          checked.output,
+          inputData.gbpContent,
+          inputData.mapIframe ?? ""
+        );
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { output: JSON.stringify(reviewedOutput) },
+        });
+        console.log(`[portal] background quality review complete: attempts=${checked.attempts}`);
+      } catch (qualityError) {
+        const message = qualityError instanceof Error ? qualityError.message : String(qualityError);
+        console.error("[portal] background quality review failed; kept generated output:", message);
+      }
+    });
+
     return NextResponse.json(
       {
         output,
-        qualityReview: checked.review,
-        qualityRevisionAttempts: checked.attempts,
+        qualityReviewPending: true,
       },
       { headers: { "Content-Type": "application/json" } }
     );
