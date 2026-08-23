@@ -13,7 +13,13 @@ import {
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
-  const { projectId } = (await req.json()) as { projectId: string };
+  const body = (await req.json()) as {
+    projectId: string;
+    hpPageOutputs?: Record<string, Record<string, string>>;
+    sitemapItems?: HpSitemapItem[];
+    pageThemes?: Record<string, string>;
+  };
+  const { projectId } = body;
 
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -26,15 +32,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unsupported HP type" }, { status: 400 });
   }
 
-  const hpPageOutputs = JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
+  const hpPageOutputs = body.hpPageOutputs ??
+    JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
   const contentOutputs = Object.fromEntries(
     Object.entries(hpPageOutputs).filter(([key]) => key !== DIRECTORY_OUTPUT_KEY)
   );
 
   // sitemap から sitemapItems を復元
-  let sitemapItems: HpSitemapItem[] = [];
+  let sitemapItems: HpSitemapItem[] = Array.isArray(body.sitemapItems)
+    ? body.sitemapItems
+    : [];
   try {
-    if (project.sitemap) {
+    if (sitemapItems.length === 0 && project.sitemap) {
       const parsed = JSON.parse(project.sitemap) as Array<HpSitemapItem | string>;
       sitemapItems = parsed.flatMap((item) =>
         typeof item === "string" ? [{ id: item, sheetName: item }] : [item]
@@ -43,9 +52,11 @@ export async function POST(req: NextRequest) {
   } catch { /* ignore */ }
 
   // pageThemes を復元
-  let pageThemes: Record<string, string> = {};
+  let pageThemes: Record<string, string> = body.pageThemes ?? {};
   try {
-    if (project.hpPageThemes) pageThemes = JSON.parse(project.hpPageThemes) as Record<string, string>;
+    if (Object.keys(pageThemes).length === 0 && project.hpPageThemes) {
+      pageThemes = JSON.parse(project.hpPageThemes) as Record<string, string>;
+    }
   } catch { /* ignore */ }
 
   const wb = new ExcelJS.Workbook();

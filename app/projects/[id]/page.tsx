@@ -689,11 +689,37 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const hpExportSnapshot = () => ({
+    projectId: id,
+    hpPageOutputs: hpPageOutputs ?? {},
+    sitemapItems,
+    pageThemes,
+  });
+
+  const persistHpExportSnapshot = async () => {
+    const snapshot = hpExportSnapshot();
+    const res = await fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hpPageOutputs: JSON.stringify(snapshot.hpPageOutputs),
+        sitemap: JSON.stringify(snapshot.sitemapItems),
+        hpPageThemes: JSON.stringify(snapshot.pageThemes),
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(data.error ?? "最新の生成内容を保存できませんでした");
+    }
+    return snapshot;
+  };
+
   const handleDownloadHp = async () => {
+    const snapshot = await persistHpExportSnapshot();
     const res = await fetch("/api/export/hp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: id }),
+      body: JSON.stringify(snapshot),
     });
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -1076,6 +1102,8 @@ export default function ProjectDetailPage() {
     setSheetWarning("");
     setSheetUrl(null);
     try {
+      // OAuth遷移が発生しても最新内容を失わないよう、認証確認より先に保存する。
+      const snapshot = await persistHpExportSnapshot();
       const check = await fetchWithTimeout("/api/auth/google/check", {}, AUTH_CHECK_TIMEOUT_MS);
       if (!check.ok) {
         window.location.href = `/api/auth/google?projectId=${id}&sheetType=hp`;
@@ -1084,7 +1112,7 @@ export default function ProjectDetailPage() {
       const res = await fetchWithTimeout("/api/export/hp/sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: id }),
+        body: JSON.stringify(snapshot),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
