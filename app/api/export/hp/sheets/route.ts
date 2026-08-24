@@ -13,6 +13,7 @@ import {
   DIRECTORY_OUTPUT_KEY,
   directoryRowsToMetadata,
 } from "@/lib/directoryOutput";
+import { syncBeautyTopSection04 } from "@/lib/beautyTopServices";
 
 export const maxDuration = 300;
 
@@ -53,7 +54,7 @@ export async function POST(req: NextRequest) {
   // スナップショットがあればDBの旧値より優先する。
   const hpPageOutputs = body.hpPageOutputs ??
     JSON.parse(project.hpPageOutputs) as Record<string, Record<string, string>>;
-  const contentOutputs = Object.fromEntries(
+  let contentOutputs = Object.fromEntries(
     Object.entries(hpPageOutputs).filter(([key]) => key !== DIRECTORY_OUTPUT_KEY)
   );
 
@@ -77,6 +78,13 @@ export async function POST(req: NextRequest) {
       pageThemes = JSON.parse(project.hpPageThemes) as Record<string, string>;
     }
   } catch { /* ignore */ }
+
+  contentOutputs = syncBeautyTopSection04(
+    project.type,
+    contentOutputs,
+    sitemapItems,
+    pageThemes
+  );
 
   let buffer: ExcelJS.Buffer;
   try {

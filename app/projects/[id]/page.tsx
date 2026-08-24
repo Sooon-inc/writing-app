@@ -14,6 +14,7 @@ import { PROJECT_TYPE_LABELS } from "@/lib/projectTypes";
 import AppSidebar from "@/components/AppSidebar";
 import { normalizeMeoOutput } from "@/lib/meoOutput";
 import DirectoryOutputCard from "@/components/DirectoryOutputCard";
+import { syncBeautyTopSection04 } from "@/lib/beautyTopServices";
 import {
   DIRECTORY_OUTPUT_KEY,
   directoryRowsToItems,
@@ -567,10 +568,11 @@ export default function ProjectDetailPage() {
         for (const pageOutput of results) Object.assign(allOutputs, pageOutput);
       }
 
+      const syncedOutputs = syncBeautyTopSection04(project.type, allOutputs, sitemapItems, pageThemes);
       await fetchWithTimeout(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
+        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(syncedOutputs) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
       setGeneratingSheet("ディレクトリ");
@@ -589,7 +591,7 @@ export default function ProjectDetailPage() {
       }
       setHpPageOutputs(
         directoryData.hpPageOutputs ?? {
-          ...allOutputs,
+          ...syncedOutputs,
           [DIRECTORY_OUTPUT_KEY]: directoryData.directoryRows,
         }
       );
@@ -655,10 +657,11 @@ export default function ProjectDetailPage() {
         for (const pageOutput of results) Object.assign(allOutputs, pageOutput);
       }
 
+      const syncedOutputs = syncBeautyTopSection04(project.type, allOutputs, sitemapItems, pageThemes);
       await fetchWithTimeout(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(allOutputs) }),
+        body: JSON.stringify({ sitemap: JSON.stringify(sitemapItems), hpPageOutputs: JSON.stringify(syncedOutputs) }),
       }, AUTH_CHECK_TIMEOUT_MS);
 
       setGeneratingSheet("ディレクトリ");
@@ -677,7 +680,7 @@ export default function ProjectDetailPage() {
       }
       setHpPageOutputs(
         directoryData.hpPageOutputs ?? {
-          ...allOutputs,
+          ...syncedOutputs,
           [DIRECTORY_OUTPUT_KEY]: directoryData.directoryRows,
         }
       );

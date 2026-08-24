@@ -48,7 +48,10 @@ export function buildHpDynamicFields(sheet: ExcelJS.Worksheet): HpDynamicField[]
       groups.push(current);
       return;
     }
-    if (!current || current.section !== section || c13) return;
+    if (!current || current.section !== section) return;
+    // 「/」等が入るリンク先行も繰り返しブロックの一部。これを除外すると
+    // 追加サービスのリンク先だけシートへ書き出されない。
+    if (c13 && c13 !== "/") return;
     const label = c5 || c8;
     if (!label || label === "項目・要素" || label === section || label.includes("完成理想")) return;
     current.fields.push({ rn, label, condition: c4 });
