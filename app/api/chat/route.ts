@@ -7,6 +7,7 @@ import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { formatLearningMemoriesForPrompt, listLearningMemories } from "@/lib/learningMemory";
 import { jsonrepair } from "jsonrepair";
 import { buildHpDynamicFields, hpDynamicRowsPrompt } from "@/lib/hpDynamicRows";
+import { isHpFieldAnchorRow, resolveHpOutputCell } from "@/lib/hpSheetLayout";
 import {
   DIRECTORY_OUTPUT_KEY,
   LP_DIRECTORY_DESCRIPTION_ROW,
@@ -55,6 +56,8 @@ function extractHpFieldMap(sheet: ExcelJS.Worksheet): FieldMap {
     if (c13) return;
     if (label.includes("本文（文章") || label.includes("完成理想")) return;
     if (label.includes("ページ") && section.includes("ページ")) return;
+    if (!isHpFieldAnchorRow(row, [5, 8])) return;
+    if (!resolveHpOutputCell(sheet, rn)) return;
     map.set(rn, { section, label });
   });
   return map;

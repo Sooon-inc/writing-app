@@ -3,6 +3,7 @@ import * as ExcelJS from "exceljs";
 import path from "path";
 import { HP_TEMPLATE_PATHS } from "@/lib/hpSitemap";
 import { buildHpDynamicFields } from "@/lib/hpDynamicRows";
+import { isHpFieldAnchorRow, resolveHpOutputCell } from "@/lib/hpSheetLayout";
 
 function getCellText(row: ExcelJS.Row, colIndex: number): string {
   const cell = row.getCell(colIndex);
@@ -72,6 +73,9 @@ export async function GET(req: NextRequest) {
       label.includes("完成理想") ||
       (label.includes("ページ") && section.includes("ページ"))
     ) return;
+
+    if (!isHpFieldAnchorRow(row, [5, 8])) return;
+    if (!resolveHpOutputCell(sheet, rn)) return;
 
     fields.push({ rn, section, label, condition: c4, group: currentGroup });
   });

@@ -7,6 +7,7 @@ import { getPlaceInfoFromMapsUrl } from "@/lib/googlePlaces";
 import { reviewAndReviseMarketingJson } from "@/lib/contentQuality";
 import { generateWriting } from "@/lib/claude";
 import { jsonrepair } from "jsonrepair";
+import { isHpFieldAnchorRow, resolveHpOutputCell } from "@/lib/hpSheetLayout";
 
 export const maxDuration = 300;
 
@@ -62,6 +63,12 @@ async function extractSheetFields(
       (label.includes("ページ") && section.includes("ページ"))
     )
       return;
+
+    if (!isHpFieldAnchorRow(row, [5, 4, 8])) return;
+
+    // 出力先のないグループ見出し・説明行を生成対象に含めない。
+    // 実入力欄が次行にある特殊レイアウトはresolverが許可する。
+    if (!resolveHpOutputCell(sheet, rn)) return;
 
     fields.push({ rn, section, label, charLimit: c12 });
   });

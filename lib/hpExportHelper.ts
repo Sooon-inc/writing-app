@@ -1,6 +1,7 @@
 import * as ExcelJS from "exceljs";
 import { prepareHpDynamicRows } from "@/lib/hpDynamicRows";
 import type { DirectoryMetadata } from "@/lib/hpDirectoryMetadata";
+import { resolveHpOutputCell } from "@/lib/hpSheetLayout";
 
 export interface HpSitemapItem {
   id: string;
@@ -266,7 +267,7 @@ function cloneWorksheet(
   return dest;
 }
 
-/** 指定列に生成コンテンツを書き込む */
+/** 共通列を基準に、原本の実入力欄へ生成コンテンツを書き込む */
 function writeContent(
   sheet: ExcelJS.Worksheet,
   rowContents: Record<string, string>,
@@ -277,12 +278,13 @@ function writeContent(
   for (const [rowNumStr, value] of Object.entries(contents)) {
     if (!value) continue;
     const rowNum = parseInt(rowNumStr);
-    const row = sheet.getRow(rowNum);
-    const cell = row.getCell(colIndex);
-    const target =
-      cell.isMerged && cell.master?.address !== cell.address ? cell.master : cell;
+    const target = resolveHpOutputCell(sheet, rowNum, colIndex);
+    if (!target) {
+      console.warn(`[hp-export] skipped non-input row: ${sheet.name}!${rowNum}`);
+      continue;
+    }
     target.value = value;
-    row.commit();
+    sheet.getRow(target.fullAddress.row).commit();
   }
 }
 
@@ -291,7 +293,7 @@ function writeContent(
  * - 固定ページ: 元のシートに直接書き込む
  * - 任意ページ: 元のシートを複製し、シート名をテーマ名（未設定時はページ名）にする
  * - 複製元になったオプションシートは最後に削除する
- * @param fixedSheetColMap 固定ページのシート名ごとに書き込み列を上書きするマップ（省略時はデフォルト列8=H）
+ * @param fixedSheetColMap 後方互換用。原則として全ページ共通のJ列（列10）を使用する。
  */
 export function applyHpOutputsToWorkbook(
   wb: ExcelJS.Workbook,
@@ -354,7 +356,9 @@ export function applyHpOutputsToWorkbook(
       if (!sheet) continue;
       directWritten.add(originalSheetName);
       usedFinalNames.add(originalSheetName);
-      const fixedCol = fixedSheetColMap?.[originalSheetName] ?? 8; // デフォルト H 列（列8）
+      // 4種類すべての原本で、本文入力欄の結合範囲に共通して含まれるJ列を
+      // 書き込み基準にする。結合開始列がG/H/I/Jのどれでもmasterへ解決される。
+      const fixedCol = fixedSheetColMap?.[originalSheetName] ?? 10;
       writeContent(sheet, rowContents, fixedCol);
     }
   }
